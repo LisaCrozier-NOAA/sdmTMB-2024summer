@@ -1,17 +1,17 @@
 ---
 title: "testing"
-author: "Katie Hippe"
-date: "2024-06-11"
+author: "Eli"
+date: "2024-06-14"
 output: html_document
 ---
-ATTEMPT 2: from 2 code no mods
 
-00- get set up 
+Pared down just to test.
+
 ```{r}
+# This is already installed
 #remotes::install_github("pbs-assess/sdmTMBextra", dependencies = TRUE)
-
 #devtools::install_github(repo = "https://github.com/hrue/r-inla", ref = "stable", subdir = "rinla", build = FALSE)
-#library(INLA)
+
 library(inlabru)
 library(sdmTMB)
 library(tidyverse)
