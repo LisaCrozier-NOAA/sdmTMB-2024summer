@@ -1,0 +1,92 @@
+---
+title: "testing"
+author: "Katie Hippe"
+date: "2024-06-11"
+output: html_document
+---
+ATTEMPT 2: from 2 code no mods
+
+00- get set up 
+```{r}
+#remotes::install_github("pbs-assess/sdmTMBextra", dependencies = TRUE)
+
+#devtools::install_github(repo = "https://github.com/hrue/r-inla", ref = "stable", subdir = "rinla", build = FALSE)
+#library(INLA)
+library(inlabru)
+library(sdmTMB)
+library(tidyverse)
+library(ggplot2)
+library(visreg)
+library(marmap)
+library(lubridate)
+library(sf)
+library(sp)
+library(raster)
+library(grDevices)
+library(fmesher)
+library(assertthat)
+```
+
+
+```{r}
+df <- read_csv(here::here("01", "01_tidy_data", "df_JSOES_Chinook_salmon_yearling_Interior_Sp.csv"))
+```
+
+03 - make a mesh!
+```{r}
+# make a mesh -- which is approximating the spatial surface
+# note that the data frame 'd' already contains lat and lon in UTMs -- which is what
+# we want to use
+
+# you should do this for each species/survey combo
+
+mesh = make_mesh(df, xy_cols = c("Lon.km","Lat.km"), cutoff = 10, type = "kmeans")
+
+# smaller cutoff values lead to more complexity -- and we can check the number of knots,
+# or random effects being estimated with the following code
+mesh$mesh$n # this can not be greater than the number of data points you have
+```
+```{r}
+plot(mesh)
+```
+
+03 - make a mesh p2 account for overlab with land
+```{r}
+# code below is used to account for any overlap of mesh with land
+#install.packages("rnaturalearth")
+#install.packages("rnaturalearthdata")
+library(rnaturalearth)
+
+map_data <- rnaturalearth::ne_countries(
+  scale = "medium",
+  returnclass = "sf", country = "United States of America")
+
+# Crop the polygon for plotting and efficiency:
+st_bbox(map_data) # find the rough coordinates
+
+na_coast <- suppressWarnings(suppressMessages(
+  st_crop(map_data,
+          c(xmin = -123, ymin = 43, xmax = -127, ymax = 49)))) # -127, -123, 49, 43,
+
+na_coast_proj <- sf::st_transform(na_coast, crs = 32610)
+
+# Project our survey data coordinates:
+survey <- df %>% dplyr::select(londd, latdd, numPkm2) %>%
+  st_as_sf(crs = 4326, coords = c("londd", "latdd")) %>% 
+  st_transform(32610)
+
+# Plot our coast and survey data:
+ggplot(na_coast_proj) +
+  geom_sf() +
+  geom_sf(data = survey, size = 0.5) 
+```
+
+03 - testing addBarrierMesh()
+```{r}
+mesh = make_mesh(df, xy_cols = c("Lon.km","Lat.km"), cutoff = 10, type = "kmeans")
+
+bspde <- sdmTMBextra::add_barrier_mesh(
+  mesh, na_coast_proj, range_fraction = 0.1,
+  proj_scaling = 1000, plot = TRUE
+)
+```
