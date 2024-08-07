@@ -1,0 +1,1629 @@
+---
+title: "graphs_galore"
+output: html_document
+date: "2024-07-18"
+---
+
+```{r}
+
+# goals: produce an r script that will take in the predicted data from 
+# the sdmTMB model and the predicted data from the ipm and plot them 
+# against each other. this is in a separate r script for reasons unknown. 
+
+# first we need to get the ocean_df data in a form we'd rather work with 
+
+oceanLatitudes <- c(seq(from = 5113, to = 5168, length.out = 297),
+                    seq(from= 5168,to = 5354, length.out = 1001))
+
+# ipm_df <- setNames(data.frame(matrix(ncol = 3, nrow = 0)), 
+#                    c("year", "Lat.km", "value"))
+# for (i in 13:34) {
+#   
+#   yr <- ocean_df$tag[i]
+#   test <- ocean_df$exp_may[[i]]
+#   
+#   test_df <- data.frame(year = c(rep(yr, 1298)),
+#                         Lat.km = c(oceanLatitudes),
+#                         value = c(test))
+#   
+#   ipm_df <- rbind(ipm_df, test_df)
+#   
+# }
+
+ipm_df <- setNames(data.frame(matrix(ncol = 4, nrow = 0)), 
+                   c("year", "Lat.km", "may_value", "june_value"))
+for (i in (3:24)) {
+  
+  yr <- ocean_df$tag[i]
+  test_may <- ocean_df$exp_may[[i]]
+  test_june <- ocean_df$exp_june[[i]]
+  
+  test_df <- data.frame(year = c(rep(yr, 1298)),
+                        Lat.km = c(oceanLatitudes),
+                        may_value = c(test_may), 
+                        june_value = c(test_june))
+  
+  ipm_df <- rbind(ipm_df, test_df)
+  
+}
+
+
+
+
+```
+
+
+
+```{r}
+
+## first we grab the sdm model predictions 
+
+plot_preds <- function(sdm, ipm) {
+  sdmGroups <- subset(sdm, Lat.km >= 5113 & Lat.km <= 5354) %>%
+    group_by(year, Lat.km) %>%
+    summarize(density = sum(exp(est))) %>%
+    mutate(density = density / sum(density))
+  
+  ipmGroups <- ipm %>%
+    group_by(year, Lat.km) %>%
+    summarize(density = value) %>%
+    mutate(density = density / sum(density))
+  
+  ggplot() + geom_line(data = sdmGroups, aes(Lat.km, density), color = "red") +
+  geom_line(data = ipmGroups, aes(Lat.km, density), color="green")# +
+  # scale_y_continuous(
+  #   "sdmTMB predicted density", 
+  #   sec.axis = sec_axis(~ . * 14, name = "ipm predicted density")
+  # )
+    
+}
+
+plot_preds(pred.spatial_may, ipm_df) +
+  scale_fill_gradient2() +
+  facet_wrap (~year)
+  ggtitle("Predicted Spreads During May Trawl Dates Over the Years")
+
+
+
+
+```
+
+
+year by year testing MAY: 
+```{r}
+may_trawl_dates <- data.frame(year = c(1999, 2000, 2001, 2002, 2003, 
+                                   2004, 2005, 2006, 2007, 2008, 
+                                   2009, 2010, 2011, 2012, 2015,
+                                   2016, 2017, 2018, 2019, 2021,
+                                   2022, 2023), 
+                          date <- c(141.5, 144, 141,143.66666666666,141.5,
+                                    144.5, 150, 147, 147, 147, 
+                                    146, 144, 144, 153, 145.5, 
+                                    148, 144.5, 146, 140.6666666666, 144,
+                                    145.5, 144))
+
+for (yr in may_trawl_dates$year) {
+
+  yr <- as.numeric(yr)
+  
+  test_sdm <- subset(pred.spatial_may, year == yr & Lat.km >= 5113 & Lat.km <= 5354 ) %>%
+      group_by(Lat.km) %>%
+      summarize(density = sum(exp(est))) %>%
+      mutate(density = density / sum(density))
+  
+  test_ipm <- subset(ipm_df, year ==yr) %>%
+    mutate(value = value / sum(value))
+  
+  # aggregate the ipm so the graphs are at a comparable scale 
+  agg_ipm <- rowsum(test_ipm$value[1:1290],rep(1:129,each=10))
+  test_ipm <- data.frame(Lat.km = c(seq(from = 5113, to = 5354, length.out = 129)),
+                         density = c(agg_ipm))
+  
+  g <- ggplot() + geom_line(data = test_sdm, aes(Lat.km, density), color = "pink") +
+    geom_line(data = test_ipm, aes(Lat.km, density), color="darkblue") +
+    ggtitle(paste("IPM (blue) vs sdmTMB (pink) for",yr)) + 
+    xlab("Ocean Kilometers from Columbia River to Tatoosh Island")  +
+    xlim(5113, 5354)
+  
+  plot(g)
+  
+}
+
+
+
+```
+
+year by year testing JUNE:
+```{r}
+
+ipm_df <- setNames(data.frame(matrix(ncol = 3, nrow = 0)), 
+                   c("year", "Lat.km", "value"))
+
+for (i in 13:34) {
+  
+  yr <- ocean_df$tag[i]
+  test <- ocean_df$exp_june[[i]]
+  
+  test_df <- data.frame(year = c(rep(yr, 1298)),
+                        Lat.km = c(oceanLatitudes),
+                        value = c(test))
+  
+  ipm_df <- rbind(ipm_df, test_df)
+  
+}
+
+for (yr in may_trawl_dates$year) {
+
+  yr <- as.numeric(yr)
+  
+  test_sdm <- subset(pred.spatial_june, year == yr & Lat.km >= 5113 & Lat.km <= 5354) %>%
+      group_by(Lat.km) %>%
+      summarize(density = sum(exp(est))) %>%
+      mutate(density = density / sum(density))
+  
+  test_ipm <- subset(ipm_df, year ==yr) %>%
+    mutate(value = value / sum(value))
+  
+  # aggregate the ipm so the graphs are at a comparable scale 
+  agg_ipm <- rowsum(test_ipm$value[1:1290],rep(1:129,each=10))
+  test_ipm <- data.frame(Lat.km = c(seq(from = 5113, to = 5354, length.out = 129)),
+                         density = c(agg_ipm))
+  
+  g <- ggplot() + geom_line(data = test_sdm, aes(Lat.km, density), color = "pink") +
+    geom_line(data = test_ipm, aes(Lat.km, density), color="darkblue") +
+    ggtitle(paste("IPM (blue) vs sdmTMB (pink) for",yr)) + 
+    xlab("Ocean Kilometers from Columbia River to Tatoosh Island")  +
+    xlim(5113, 5354)
+  
+  plot(g)
+  
+}
+
+
+
+```
+
+keeping those graphs for comparison purposes, here's everything with the transported fish added
+```{r}
+
+may_trawl_dates <- data.frame(year = c(1999, 2000, 2001, 2002, 2003, 
+                                   2004, 2005, 2006, 2007, 2008, 
+                                   2009, 2010, 2011, 2012, 2015,
+                                   2016, 2017, 2018, 2019, 2021,
+                                   2022, 2023), 
+                          date <- c(141.5, 144, 141,143.66666666666,141.5,
+                                    144.5, 150, 147, 147, 147, 
+                                    146, 144, 144, 153, 145.5, 
+                                    148, 144.5, 146, 140.6666666666, 144,
+                                    145.5, 144))
+
+for (yr in may_trawl_dates$year) {
+
+  yr <- as.numeric(yr)
+  
+  test_sdm <- subset(pred.spatial_june, year == yr & Lat.km >= 5113 & Lat.km <= 5354) %>%
+      group_by(Lat.km) %>%
+      summarize(density = sum(exp(est))) %>%
+      mutate(density = density / sum(density))
+  
+  test_ipm <- subset(ipm_df, year ==yr) %>%
+    mutate(value= june_value) %>%
+    mutate(value = value / sum(value))
+  
+  # aggregate the ipm so the graphs are at a comparable scale 
+  agg_ipm <- rowsum(test_ipm$value[1:1290],rep(1:129,each=10))
+  test_ipm <- data.frame(Lat.km = c(seq(from = 5113, to = 5354, length.out = 129)),
+                         density = c(agg_ipm))
+  
+  g <- ggplot() + geom_line(data = test_sdm, aes(Lat.km, density), color = "pink") +
+    geom_line(data = test_ipm, aes(Lat.km, density), color="darkblue") +
+    ggtitle(paste("IPM (blue) vs sdmTMB (pink) for",yr)) + 
+    xlab("Ocean Kilometers from Columbia River to Tatoosh Island")  +
+    xlim(5113, 5354)
+  
+  plot(g)
+  
+}
+
+
+
+
+```
+
+
+okay now for may 
+```{r}
+for (yr in may_trawl_dates$year) {
+
+  yr <- as.numeric(yr)
+  
+  test_sdm <- subset(pred.spatial_may, year == yr & Lat.km >= 5113 & Lat.km <= 5354) %>%
+      group_by(Lat.km) %>%
+      summarize(density = sum(exp(est))) %>%
+      mutate(density = density / sum(density))
+  
+  test_ipm <- subset(ipm_df, year ==yr) %>%
+    mutate(value= may_value) %>%
+    mutate(value = value / sum(value))
+  
+  # aggregate the ipm so the graphs are at a comparable scale 
+  agg_ipm <- rowsum(test_ipm$value[1:1290],rep(1:129,each=10))
+  test_ipm <- data.frame(Lat.km = c(seq(from = 5113, to = 5354, length.out = 129)),
+                         density = c(agg_ipm))
+  
+  g <- ggplot() + geom_line(data = test_sdm, aes(Lat.km, density), color = "pink") +
+    geom_line(data = test_ipm, aes(Lat.km, density), color="darkblue") +
+    ggtitle(paste("IPM (blue) vs sdmTMB (pink) for",yr)) + 
+    xlab("Ocean Kilometers from Columbia River to Tatoosh Island")  +
+    xlim(5113, 5354)
+  
+  plot(g)
+  
+}
+
+
+
+
+```
+
+
+
+now do some residual analysis with the may stuff
+```{r}
+#first, grab the total data disregarding year to make our base plot 
+latCum <- ipm_df %>%
+  group_by(Lat.km) %>%
+  mutate(value = june_value) %>%
+  summarize(density = sum(value)) %>%
+  mutate(density = density / sum(density))
+  
+  latCum$ID <- seq.int(nrow(latCum))
+  latCum$cum <- numeric(length(latCum$ID))
+  
+  latCum$cum[1] <- 1
+  
+  for (x in latCum$ID) {
+    if (x > 1) {
+      prev <- latCum$cum[x-1]
+      latCum$cum[x] <- prev - latCum$density[x]
+    }
+  }
+  
+   ggplot(latCum, aes(Lat.km)) + geom_line(aes(y=cum, color = 'cum')) +
+     scale_x_reverse()
+  
+# next, we'll create our facet_wrap for the cdf of other years 
+  
+plot_cdfs <- function(dat) {
+  latCdfs <- dat %>%
+    group_by(year, Lat.km) %>%
+    mutate(value = june_value) %>%
+    summarize(density = sum(value)) %>%
+    mutate(density = density / sum(density))
+  
+  latCdfs$ID <- seq.int(nrow(latCdfs))
+  latCdfs$cum <- numeric(length(latCdfs$ID))
+  
+  latCdfs$resids <- numeric(length(latCdfs$ID))
+  
+  #print(length(latCdfs$ID))
+  
+  latCdfs$cum[1] <- 1
+  
+  for (x in latCdfs$ID) {
+    if (x>1) {
+      if (latCdfs$year[x] == latCdfs$year[x-1]) {
+        prev <- latCdfs$cum[x-1]
+        latCdfs$cum[x] <- prev - latCdfs$density[x]
+      } else {
+        latCdfs$cum[x] <- 1
+      }
+    }
+    
+    index <- match(latCdfs$Lat.km[x], latCum$Lat.km)
+    latCdfs$resids[x] <- latCdfs$cum[x] - latCum$cum[index]
+  }
+  
+  
+  
+  #ggplot(latCdfs, aes(latdd, resids, color="year")) + geom_point() + scale_x_reverse()
+  
+  #initialize empty matrix
+  avg_resids <- data.frame(matrix(ncol = 2, nrow = 26))
+  x <- c("year", "avg_resid")
+  colnames(avg_resids) <- x
+  
+  #build up matrix 
+  i <- 1 # counter variable
+  for (y in unique(latCdfs$year)) {
+    avg_resids$year[i] <- y
+    
+    by_year <- subset(latCdfs, year == toString(y))
+    avg_resids$avg_resid[i] <- mean(by_year$resids)
+    
+    i <- i +1 
+  }
+  
+  
+  
+  avg_resids
+  
+}
+
+resids <- plot_cdfs(ipm_df) #+
+  # scale_fill_gradient2() +
+  # facet_wrap(~year)
+  # ggtitle("CDFs by latitude")
+  
+# ggsave(filename = "03_plots/MayCDFResiduals.png",
+#        dpi = 600,
+#        width=25,
+#        height=25,
+#        units="cm")
+```
+
+```{r}
+ggplot(resids, aes(as.numeric(year), avg_resid)) + geom_line() + 
+  ggtitle("IPM Residuals by Year") + ylab("IPM Residuals") + xlab("year") +
+  ylim(-.2, .2)
+
+
+
+```
+
+
+```{r}
+# ipm_resids <- resids
+# 
+# resids$ipm_resid <- ipm_resids$avg_resid
+# resids$sdm_resid <- sdm_resids$avg_resid
+
+resid <- merge(sdm_resids, resids, by="year")
+
+ggplot(data=resid, aes(avg_resid.x, avg_resid.y, col=year)) + geom_point() +
+  xlab("sdmTMB Residuals") + ylab("IPM Residuals") +
+  ggtitle("Residuals for sdmTMB vs IPM (June)")
+
+# plot(sdm_resids$avg_resid, ipm_resids$avg_resid, 
+#      main="Residuals for sdmTMB vs IPM (May)", xlab="sdmTMB Residuals", 
+#      ylab="IPM Residuals", col=sdm_resids$year)
+
+```
+
+center of gravity?
+```{r}
+# assuming m4c is from may data
+
+# make predictions
+# pred.index = predict(m4c, newdata = new_df, return_tmb_object = TRUE)
+# cog <- get_cog(pred.index, format = "wide")
+
+ggplot(cog, aes(year, est_y, colour = year)) +
+  geom_point() +
+  #geom_linerange(aes(xmin = lwr_x, xmax = upr_x)) +
+  geom_linerange(aes(ymin = lwr_y, ymax = upr_y)) +
+ # scale_colour_viridis_c() + 
+  ggtitle("(Latitudinal) sdmTMB Center of Gravity During June Over the Years") +
+  xlab("Year") + ylab("Center of Gravity (UTM)") +
+  #xlim(320,430) +
+  #ylim(5110, 5280) +
+  scale_colour_scico(palette = "batlow") 
+
+
+cog_df <- data.frame(year = ocean_snake_df$tag[2:23],
+                     x = rep(0, 22), 
+                     x_lower = rep(0,22),
+                     x_upper = rep(0,22))
+
+for (i in (1:22)) {
+  
+  test <- ocean_snake_df$exp_may[[i+1]]
+  test <- test / sum(test) # normalized 
+  
+  temp_x <- sum(test * oceanLatitudes)
+  
+  temp_ol <- oceanLatitudes * oceanLatitudes
+  temp_sd <- sqrt(sum(test * temp_ol) - (temp_x)^2)
+  
+  cog_df$x[i] <- temp_x
+  cog_df$x_lower[i] <- temp_x - temp_sd
+  cog_df$x_upper[i] <- temp_x + temp_sd
+  
+  
+  
+}
+
+
+ggplot(cog_df, aes(year, x, colour = year)) +
+  geom_point() +
+  #geom_linerange(aes(xmin = lwr_x, xmax = upr_x)) +
+  geom_linerange(aes(ymin = x_lower, ymax = x_upper)) +
+  #scale_colour_viridis_c() + 
+  ggtitle("(Latitudinal) IPM Center of Gravity During June Over the Years") +
+  xlab("Year") + ylab("Center of Gravity (UTM)") #+
+  #xlim(1998,2023) +
+  #ylim(5110, 5280) +
+ # scale_colour_scico(palette = "batlow") 
+  
+
+
+# now plot them against each other
+
+cog_df <- merge(cog, cog_df, by="year")
+
+cog_df <- cog_df %>%
+  filter(!(year==2000 | year==2001 | year==2002 | year==2003 | year ==2004 | year==2005
+         | year==2015 | year== 2016 | year==2019))
+
+ggplot(cog_df, aes(est_y, x, colour = year)) +
+  geom_point() +
+  geom_linerange(aes(xmin = lwr_y, xmax = upr_y), alpha=0.4) +
+  geom_linerange(aes(ymin = x_lower, ymax = x_upper),  alpha=0.4) +
+  scale_colour_scico(palette = "batlow") + 
+  ggtitle("COG of IPM vs sdmTMB Models") +
+  xlab("COG of sdmTMB") + ylab("COG of IPM") +
+  #xlim(5100,5200) +
+  #ylim(5100, 5280) +
+  geom_abline(slope=1, intercept = 0)
+  
+
+```
+
+
+comparing DFO vs JSOES log abundances
+```{r}
+
+cpue_df <- data.frame(year = c(index_smaller$year),
+                      jsoes = c(index_smaller$log_est),
+                      dfo_h = c(NA,12.1512821493364, 12.4628292232926, 10.0237360332437, 12.5313370823472, 12.0178347683052, 12.2098342831807, 9.2255288416318, 12.0153208845183, 11.355514549978, 13.6482607011315, 12.1026264565262, 12.5921920719189, 12.9081266214338, 15.0004374313932,8.72487536675629, 9.23305305226, 10.6093962345655, 11.0628145271201, 10.0946105426347, 13.9036310414747, 9.36591681361262, NA, NA, NA, NA), 
+                      dfo_w = c(NA, 11.8437066391194, 12.6812107089342, 10.5623819395378, 11.6777893079392, 10.4221350971788, 10.5702327239792, 8.12022208075737, 11.8888322220986, 9.54541015463219, 12.6770164561754, 11.2783965311073, 11.4804119283555, 11.8078012820484, 14.4464299919278, 10.6277545301593, 7.29888308300897,  9.5367432741908, 9.8724349805202, 11.2767804394771, 11.7624294466639, 12.6929494851819, NA, NA, NA, NA))
+
+ipm_cpue <- data.frame(year = c(ocean_snake_df$tag[2:23]))
+ipm_cpue$bcc <- log(ocean_snake_df$BCC_count_june[2:23])
+
+ncc <- rep(0, 22)
+for (i in 2:23) {
+  test <- ocean_snake_df$exp_june[[i]]
+  ncc[i-13] <- log(sum(test))
+  
+}
+
+ipm_cpue$ncc <- ncc
+
+cpue_df <- merge(cpue_df, ipm_cpue, by="year") %>%
+  na.omit()
+
+cpue_df <- cpue_df %>%
+  mutate(dfo = (dfo_h)) %>%
+  mutate(sdmRatio = dfo / jsoes) %>%
+  mutate(ipmRatio = bcc / ncc) %>%
+  filter(!(year== 2003 | year ==2018 | year==2015 | year==2000 | year==2004))
+
+ggplot(cpue_df, aes(sdmRatio, ipmRatio, col=year)) + geom_point() +
+  ggtitle("BCC / NCC Ratio by sdmTMB and IPM Modeling") +
+  xlab("DFO / JSOES log abundance") + ylab("BCC / NCC log abundance")  +
+  ylim(.5, 1)
+
+ggplot(cpue_df, aes(year, dfo)) + geom_line() + geom_point() +
+  ggtitle("Ln Abundances by Year for DFO") +
+  xlab("Year") + ylab("Ln Abundance")
+
+
+```
+
+
+
+
+comparing transported vs non-transported fish in IPM predictions 
+```{r}
+
+oceanLatitudes <- c(seq(from = 5113, to = 5168, length.out = 297),
+                    seq(from= 5168,to = 5354, length.out = 1001))
+
+may_trawl_dates <- data.frame(year = c(1999, 2000, 2001, 2002, 2003, 
+                                   2004, 2005, 2006, 2007, 2008, 
+                                   2009, 2010, 2011, 2012, 2015,
+                                   2016, 2017, 2018, 2019, 2021,
+                                   2022, 2023), 
+                          date <- c(141.5, 144, 141,143.66666666666,141.5,
+                                    144.5, 150, 147, 147, 147, 
+                                    146, 144, 144, 153, 145.5, 
+                                    148, 144.5, 146, 140.6666666666, 144,
+                                    145.5, 144))
+
+#ocean_trans_df <- ocean_df
+
+# now ocean_df is og and ocean_trans_df contains the transported fish
+# want to display og and trans may and june on top of expected
+  # two separate graphs for each? or all six lines on the same one?
+  # might get chaotic but that's what we're here for 
+  # can separate by color and line style as well
+
+ipm_df <- setNames(data.frame(matrix(ncol = 8, nrow = 0)), 
+                   c("year", "Lat.km", "may_value", "june_value", "may_trans", 
+                     "june_trans", "may_snake","june_snake"))
+
+for (i in (3:24)) {
+  
+  yr <- ocean_trans_df$tag[i]
+  test_may <- ocean_cis_df$exp_may[[i+10]]
+  test_june <- ocean_cis_df$exp_june[[i+10]]
+  
+  test_may_trans <- ocean_trans_df$exp_may[[i]]
+  test_june_trans <- ocean_trans_df$exp_june[[i]]
+  
+  test_may_snake <- ocean_snake_df$exp_may[[i-1]]
+  test_june_snake <- ocean_snake_df$exp_june[[i-1]]
+  
+  test_df <- data.frame(year = c(rep(yr, 1298)),
+                        Lat.km = c(oceanLatitudes),
+                        may_value = c(test_may), 
+                        june_value = c(test_june),
+                        may_trans = c(test_may_trans),
+                        june_trans = c(test_june_trans),
+                        may_snake = c(test_may_snake),
+                        june_snake = c(test_june_snake))
+  
+  ipm_df <- rbind(ipm_df, test_df)
+  
+}
+
+for (yr in may_trawl_dates$year) {
+
+  yr <- as.numeric(yr)
+  
+  # grab the may and june sdmTMB models
+  
+  may_sdm <- subset(pred.spatial_may, year == yr & Lat.km >= 5113 & Lat.km <= 5354 ) %>%
+      group_by(Lat.km) %>%
+      summarize(density = sum(exp(est))) %>%
+      mutate(density = density / sum(density))
+  
+  june_sdm <- subset(pred.spatial_june, year == yr & Lat.km >= 5113 & Lat.km <= 5354 ) %>%
+      group_by(Lat.km) %>%
+      summarize(density = sum(exp(est))) %>%
+      mutate(density = density / sum(density))
+   
+   
+   # grab the may and june ipm WITHOUT then WITH transported fish 
+  # then normalize it
+  test_ipm <- subset(ipm_df, year==yr) %>%
+    mutate(may_value = may_value / sum(may_value)) %>%
+    mutate(june_value = june_value / sum(june_value)) %>%
+    mutate(may_trans = may_trans / sum(may_trans)) %>%
+    mutate(june_trans = june_trans / sum(june_trans)) %>%
+    mutate(may_snake = may_snake / sum(may_snake)) %>%
+    mutate(june_snake = june_snake / sum(june_snake)) 
+  
+  # aggregate the ipm so the graphs are at a comparable scale 
+  agg_ipm <- rowsum(test_ipm$may_value[1:1290],rep(1:129,each=10))
+  
+  agg_ipm <- data.frame(Lat.km = c(seq(from = 5113, to = 5354, length.out = 129)),
+                         may_d = c(agg_ipm))
+  agg_ipm$june_d <- rowsum(test_ipm$june_value[1:1290], rep(1:129,each=10))
+  
+  agg_ipm$may_tr_d <- rowsum(test_ipm$may_trans[1:1290], rep(1:129,each=10))
+  agg_ipm$june_tr_d <- rowsum(test_ipm$june_trans[1:1290], rep(1:129,each=10))
+  
+  agg_ipm$may_sn_d <- rowsum(test_ipm$may_snake[1:1290], rep(1:129,each=10))
+  agg_ipm$june_sn_d <- rowsum(test_ipm$june_snake[1:1290], rep(1:129,each=10))
+  
+  
+  # plot everything
+  g <- ggplot() + #geom_line(data = may_sdm, aes(Lat.km, density), color = "pink", lwd = 2) +
+    geom_line(data = june_sdm, aes(Lat.km, density), color = "red", lwd = 2) +
+    
+    #geom_line(data = agg_ipm, aes(Lat.km, may_d), color="darkblue", lty = 2) +
+    #geom_line(data = agg_ipm, aes(Lat.km, june_d), color="blue", lty=2) +
+    
+    #geom_line(data = agg_ipm, aes(Lat.km, may_tr_d), color="darkblue", lty=2) +
+    geom_line(data = agg_ipm, aes(Lat.km, june_tr_d), color="blue", lty=2) +
+    
+    #geom_line(data = agg_ipm, aes(Lat.km, may_sn_d), color="darkblue") +
+    geom_line(data = agg_ipm, aes(Lat.km, june_sn_d), color="blue") +
+    
+    ggtitle(paste("IPM (blue) vs sdmTMB (pink) for",yr)) + 
+    xlab("Ocean Kilometers from Columbia River to Tatoosh Island")  +
+    xlim(5113, 5354)
+  
+  plot(g)
+  
+}
+
+
+
+```
+
+
+plots of willapa bay exit date by year 
+```{r}
+
+for (i in 2:18) {
+  
+  curr_will <- ocean_snake_df$willapa_ts[[i]]
+  tag <- ocean_snake_df$tag[i]
+  
+  plot(80:220, curr_will[80:220], type="l", xlab="Day of Year", ylab="Number of Fish",
+       main=paste("Plume Exit Date Distribution for",tag))
+  
+  
+  
+}
+
+
+
+```
+
+plots of all may!!
+```{r}
+
+may_df <- data.frame(year = rep(1999, 1298),
+                     value = c(ocean_snake_df$exp_may[[2]]),
+                     Lat.km = c(oceanLatitudes))
+
+for (i in 3:18) {
+  
+  test_df <- data.frame(year = rep(ocean_snake_df$tag[i], 1298),
+                        value = c(ocean_snake_df$exp_may[[i]]),
+                        Lat.km = c(oceanLatitudes))
+  may_df <- rbind(may_df, test_df)
+}
+
+
+# now do the same thing with the previously null model 
+trans_df <- data.frame(year = rep(1999, 1298),
+                     value = c(ocean_trans_df$exp_may[[3]]),
+                     Lat.km = c(oceanLatitudes))
+
+for (i in 3:18) {
+  
+  test_df <- data.frame(year = rep(ocean_trans_df$tag[i+1], 1298),
+                        value = c(ocean_trans_df$exp_may[[i+1]]),
+                        Lat.km = c(oceanLatitudes))
+  trans_df <- rbind(trans_df, test_df)
+}
+
+# plot the two side by side 
+require(gridExtra)
+
+g1 <- ggplot(data = may_df, aes(Lat.km, value, color = year)) + geom_line() +
+  xlab("Ocean Kilometers (Columbia River to Tatoosh") +
+  ylab("Number of Fish") + ggtitle("Snake River: MAY")
+
+g2 <- ggplot(data = trans_df, aes(Lat.km, value, color = year)) + geom_line() +
+  xlab("Ocean Kilometers (Columbia River to Tatoosh") +
+  ylab("Number of Fish") + ggtitle("Smolt Index: MAY")
+
+grid.arrange(g1, g2, ncol=2)
+
+```
+
+calculating northward progression via ratios: curr midpoint-grays harbor (5205)
+```{r}
+#library(scico)
+
+
+midpoint <- 5205
+
+ratio_df <- data.frame(year = unique(pred.spatial_may$year))
+ratio_df$sdm <- rep(0, length(ratio_df$year))
+ratio_df$ipm_s <- rep(0, length(ratio_df$year))
+ratio_df$ipm_t <- rep(0, length(ratio_df$year))
+
+for (yr in ratio_df$year) {
+  
+  # isolate the current year 
+  curr_pred <- subset(pred.spatial_may, year==yr) %>%
+    group_by(Lat.km) %>%
+    summarize(sdm = sum(exp(est))) %>%
+    mutate(sdm = sdm / sum(sdm))
+  
+  curr_pred <- subset(curr_pred, Lat.km >= 5113 & Lat.km <= 5354)
+  
+  north_pred <- sum(subset(curr_pred, Lat.km >= midpoint & Lat.km <= 5354)$sdm)
+  south_pred <- sum(subset(curr_pred, Lat.km >= 5113 & Lat.km <= midpoint)$sdm)
+  
+  index <- match(yr, ratio_df$year)
+  ratio_df$sdm[index] = north_pred / south_pred
+
+  
+  plot(curr_pred$Lat.km, curr_pred$sdm, type="l", main=paste("Distribution for", yr),
+      col="pink", ylim=c(0,0.05))
+  
+  
+  # now do the same thing for ipm predictions COMPASS PREDICTIONS
+  curr_pred <- subset(ocean_snake_df, tag==yr)
+  curr_pred <- data.frame(Lat.km = c(oceanLatitudes),
+                          ipm = c(curr_pred$exp_may[[1]])) %>%
+    mutate(ipm = ipm / sum(ipm))
+
+  north_pred <- sum(subset(curr_pred, Lat.km >= midpoint & Lat.km <= 5354)$ipm)
+  south_pred <- sum(subset(curr_pred, Lat.km >= 5113 & Lat.km <= midpoint)$ipm)
+
+  index <- match(yr, ratio_df$year)
+  ratio_df$ipm_s[index] = north_pred/ south_pred
+  
+  agg_ipm <- rowsum(curr_pred$ipm[1:1290],rep(1:129,each=10))
+  curr_pred <- data.frame(Lat.km = c(seq(from = 5113, to = 5354, length.out = 129)),
+                         ipm = c(agg_ipm))
+
+
+  lines(curr_pred$Lat.km, curr_pred$ipm, type="l", col="darkblue")
+  
+  
+  # now do the same thing for ipm predictions BONNEVILLE + TRANSPORTED PREDICTIONS
+  curr_pred <- subset(ocean_trans_df, tag==yr)
+  curr_pred <- data.frame(Lat.km = c(oceanLatitudes),
+                          ipm = c(curr_pred$exp_may[[1]])) %>%
+    mutate(ipm = ipm / sum(ipm))
+
+  north_pred <- sum(subset(curr_pred, Lat.km >= midpoint & Lat.km <= 5354)$ipm)
+  south_pred <- sum(subset(curr_pred, Lat.km >= 5113 & Lat.km <= midpoint)$ipm)
+
+  index <- match(yr, ratio_df$year)
+  ratio_df$ipm_t[index] = north_pred/ south_pred
+  
+  agg_ipm <- rowsum(curr_pred$ipm[1:1290],rep(1:129,each=10))
+  curr_pred <- data.frame(Lat.km = c(seq(from = 5113, to = 5354, length.out = 129)),
+                         ipm = c(agg_ipm))
+
+
+  lines(curr_pred$Lat.km, curr_pred$ipm, type="l", col="lightblue", lty=2)
+  
+  legend("topright",legend=c("sdmTMB","Compass", "BON"),
+    text.col=c("pink","blue", "lightblue"),lty=c(1,1,2),col=c("pink","blue","lightblue"))
+  
+  
+  
+  
+}
+
+#ratio_df <- subset(ratio_df, year <= 2017)
+
+plot(ratio_df$year, ratio_df$sdm, main=paste("Proportion of Fish North of", midpoint),
+     xlab="Year", ylab=paste("Ratio of Fish North / South of", midpoint), pch=16,
+     ylim=c(0,1.5))
+points(ratio_df$year, ratio_df$ipm_s, col="red", pch=15)
+points(ratio_df$year, ratio_df$ipm_t, col="lightblue", pch=17)
+
+  ## Add Legend
+  legend("topright",legend=c("sdmTMB","Compass", "BON"),
+    text.col=c("black","red", "lightblue"),pch=c(16,15, 17),col=c("black","red","lightblue"))
+
+```
+
+```{r}
+
+# mark certain years for removal: 2015, 2002 (fewest data)
+
+
+# worst years for snake: 2004, 2017, 2000, 2001, 1999
+ratio_df <- ratio_df %>%
+  filter(!(year==2000 | year==2001 | year==2002 | year==2003 | year ==2004 | year==2005
+         | year==2015 | year== 2016 | year==2019))
+
+
+ggplot(data=ratio_df, aes(sdm, ipm_s, col=year) ) + geom_point() +
+  ggtitle("Compass IPM vs sdmTMB Ratio of North / South Fish") +
+  xlab("sdmTMB Ratio") + ylab("IPM Ratio") +
+  scale_colour_scico(palette = "batlow") 
+
+# now again with the bonneville + transported distributions
+ggplot(data=ratio_df, aes(sdm, ipm_t, col=year) ) + geom_point() +
+  ggtitle("BON IPM vs sdmTMB Ratio of North / South Fish") +
+  xlab("sdmTMB Ratio") + ylab("IPM Ratio") +
+  scale_colour_scico(palette = "batlow") 
+  
+
+
+```
+
+
+
+
+
+
+
+
+
+
+
+another thing to do: rerun sdmTMB models but for each year instead of all years
+at once (hopefully this will make the models a bit better and not use other years
+to fill in gaps and focus more on the trawl data)
+```{r}
+# assuming we've already run our na_coast_proj from testing.Rmd and cleaning the data
+
+# latsJ_df <- data.frame(year = numeric(),
+#                       Lat.km = numeric(),
+#                       density = numeric())
+# 
+# predsJ_df <- data.frame(ID = numeric(),
+#                        layer = numeric(),
+#                        distance = numeric(),
+#                        x = numeric(),
+#                        y = numeric(),
+#                        area = numeric(),
+#                        Lon.km = numeric(),
+#                        Lat.km = numeric(),
+#                        area.km = numeric(),
+#                        depth = numeric(),
+#                        year = numeric(),
+#                        area_km2 = numeric(),
+#                        yday = numeric(),
+#                        scale_dist2shore = numeric(),
+#                        scale_depth = numeric(),
+#                        scale_yday = numeric(),
+#                        scale_lat = numeric(),
+#                        est = numeric(),
+#                        est_non_rf = numeric(),
+#                        est_rf = numeric(),
+#                        omega_s = numeric())
+
+
+#yrs <- c(1999,2006,2007,2008,2009,2010,2011,2012,2017,2018,2021,2022,2023)
+
+yrs <- c( 2023)
+
+#yrs <- c(1998, 1999, 2000, 2001, 2003, 2005, 2006, 2007, 2008, 2009, 2011, 2012, 2013, 2014, 2015, 2017)
+
+for (yr in yrs) {
+
+  dat <- subset(june, year==yr)
+  
+  # make meshes
+  mesh <- make_mesh(dat, xy_cols = c("Lon.km","Lat.km"), cutoff = 10, type = "kmeans")
+  bspde <- sdmTMBextra::add_barrier_mesh(
+    mesh, na_coast_proj, range_fraction = 0.1,
+    proj_scaling = 1000, plot = TRUE
+  )
+  
+  # create sdmTMB function idk
+  fit <- sdmTMB(
+    formula = density ~ 0 + s(scale_depth) + s(scale_lat), # try with intercept
+    data = dat,
+    mesh = bspde,
+    family = tweedie(link = "log"), # try gaussian? 
+    spatial = "on",
+    #spatiotemporal = "iid",
+    #spatial_varying = ~ scale_yday,
+    #time = "year"
+  )
+  
+  
+  #### CREATE BOUNDARY ###### (gotta be a way to make this step shorter)
+  
+  # create a polygon based off the mesh boundaries
+  new_poly <- st_convex_hull(st_union(bspde$mesh_sf))
+  plot(new_poly)
+  st_crs(new_poly)
+  
+  # remove land from polygon
+  poly <- st_difference(new_poly, na_coast_proj)
+  st_crs(poly) 
+  plot(poly)
+  st_bbox(poly)
+  
+  
+  # create a grid within the polygon using the raster package
+  resolution <- 2000 # poly is in meters; 2000 is pretty fine: 2000m x 2000m = 4 km2
+  r <- raster::raster(as(poly, "Spatial"), resolution = resolution)
+  rr <- raster::rasterize(as(poly, "Spatial"), r, getCover = TRUE)
+  plot(rr)
+  
+  # convert to data frame and calculate grid cell area for each row
+  grid <- as.data.frame(raster::rasterToPoints(rr))
+  grid$area <- grid$layer * resolution * resolution # meters squared
+  grid <- dplyr::filter(grid, area > 0) |> 
+    dplyr::select(-layer)
+  
+  grid$Lon.km <- grid$x / 1000
+  grid$Lat.km <- grid$y / 1000
+  grid$area.km <- grid$area / 1e06
+  
+  
+  # plot to see a display of grid cell areas coded by color
+  ggplot(grid, aes(Lon.km, Lat.km, colour = area.km)) +
+    geom_tile(width = 10, height = 10, fill = NA) + # in meters
+    scale_colour_viridis_c(direction = -1) +
+    geom_point(size = 0.5) +
+    coord_fixed()
+  
+  
+  # convert to a shapefile using the appropriate crs (we want UTMs) - this is so
+  # we can fill in the corresponding missing depth data using a bathymetry raster
+  grid_sdf <- st_as_sf(grid, coords = c("x", "y"), crs = "epsg:32610")
+  
+  
+  # If you decide to use bottom depth, you'll need to grab depth data for each grid cell
+  # Get bathymetric data for each grid cell, bounding box = -126,42,-123,49
+  JSOES_bathy = marmap::as.raster(getNOAA.bathy(-126, -123, 49, 42, res=0.25, keep=TRUE)) # resolution is in minutes
+  plot(JSOES_bathy)
+  st_crs(JSOES_bathy)
+  
+  bathy <- projectRaster(JSOES_bathy, crs = "epsg:32610")
+  plot(bathy)
+  st_crs(bathy)
+  
+  # see https://www.neonscience.org/resources/learning-hub/tutorials/extract-values-rasters-r for more information
+  depth_max <- raster::extract(bathy,           # raster layer
+                               grid_sdf,        # SPDF with centroids for buffer
+                               buffer = 1000,   # buffer size, units depend on CRS; here, extract all depths within a 1000m radius of the grid cell centroid
+                               fun=max,         # what value to extract
+                               df=TRUE)         # return a dataframe?
+  
+  # translate land or NAs to 0 meters depth (not underwater) - we'll filter these out later
+  depth_max.a <- depth_max %>%
+    mutate(depth = case_when(layer > 0 ~ 0,
+                             is.na(layer) ~ 0,
+                             TRUE ~ layer),
+           depth = depth * -1)
+  
+  # bind depth field with grid data frame
+  new_df.depth <- cbind(depth_max.a,grid)
+  
+  # Here, we're grabbing distance to shore for each grid cell (the shapefile is going to be in UTM (meters))
+   library(distancetocoast)
+   library(viridis)
+  
+  # grab raster
+  dist <- crop(distance_to_coastline_10, extent(-126, -123, 43, 49)) # -126, -124, 43, 49
+  plot(dist,col = viridis::viridis(64))
+  
+  st_crs(dist)
+  
+  dist_proj <- raster::projectRaster(dist, crs = 4326)
+  
+  # calculate mean distance to shore for each grid cell
+  dist_mean <- raster::extract(dist_proj,        # raster layer
+                               grid_sdf,         # SPDF with centroids for buffer
+                               fun=mean,         # what value to extract
+                               df=TRUE)          # return a dataframe? 
+  
+  dist_mean.b <- dist_mean %>% 
+    mutate(distance = layer/1000) 
+  
+  # bind distance field with grid data frame
+  new_df.distance <- cbind(dist_mean.b,grid)
+  
+  # now bind with new_df.depth
+  
+  new_df.all <- new_df.distance %>% 
+    left_join(new_df.depth %>%
+                dplyr::select(ID,depth))
+  
+  
+  # now expand our data frame to include all covariates in our model (year, day, and
+  # lat/lon in kilometers) - this is a necessary step for prediction
+  
+  # replication factor  
+  yrs <- sort(as.vector(unique(dat$year))) 
+  n <- length(yrs)
+  
+  # replicate our dataframe for year in our model, call our df, 'new_df'
+  new_df <- do.call("rbind", replicate( 
+    n, new_df.all, simplify = FALSE)) 
+  
+  # add year covariate
+  new_df$year_f <-  as.factor(rep(yrs, each = nrow(new_df.all)))
+  new_df$year <-  rep(yrs, each = nrow(new_df.all))
+  
+  # add lat/lon in km
+  new_df$Lon.km <- new_df$x / 1000
+  new_df$Lat.km <- new_df$y / 1000
+  #new_df$Lat.km2 <- new_df$Lat.km^2
+  
+  # create new area field in km^2
+  new_df$area_km2 <- new_df$area / 1e06
+  
+  
+  # let's also add a day column to predict on -- we don't currently have yday in the model,
+  # but later (below) we will end up testing a model with yday as a covariate 
+  # pick any yday within the range of existing data (day 166 is roughly June 15th)
+  
+  new_df$yday <- 143 
+  
+  
+  # grab mean and stdev of distance column in dat (survey loc distances)
+  # use these to scale prediction grid depths
+  mu.dist <- mean(df$dist)     # [1] 27.48336
+  sd.dist <- sd(df$dist)       # [1] 17.09894
+  
+  
+  # do the same for depth, if necessary
+  mu.depth <- mean(df$depth)     # [1] 114.44797
+  sd.depth <- sd(df$depth)       # [1] 117.99652
+  
+  # do the same for yday
+  mu.yday <- mean(df$yday)     # [1] 164.95731
+  sd.yday <- sd(df$yday)       # [1] 14.42126
+  
+  # do the same for lat
+  mu.lat <- mean(df$Lat.km)     
+  sd.lat <- sd(df$Lat.km)
+  
+  new_df <- new_df %>% 
+    dplyr::filter(depth > 0,
+                  distance > 0) %>% 
+    mutate(scale_dist2shore = (distance - mu.dist) / sd.dist,    # use same name as covariate used in model
+           scale_depth = (depth - mu.depth) / sd.depth,
+           scale_yday = (yday - mu.yday) / sd.yday,
+           scale_lat = (Lat.km - mu.lat) / sd.lat)
+  
+  
+  # now we can predict our spatial distribution!
+  
+  set.seed(011823)
+  
+  pred.spatial_dat <- predict(fit, newdata = new_df, return_tmb_object = FALSE) # return_tmb_object is FALSE (it's true when we want an idex)
+  
+  
+  
+  
+  # plot a pretty map with our year predicted distributiion on it
+  
+  map_data <- rnaturalearth::ne_countries(
+    scale = "large",
+    returnclass = "sf", country = "United States of America")
+  # Crop the polygon for plotting and efficiency:
+  st_bbox(map_data) # find the rough coordinates
+  
+  
+  ggplot(na_coast_proj) + geom_sf()
+  
+  sf::st_boundary(na_coast_proj)
+  
+  par(mfrow =c(1,1))
+  
+  ggplot() + 
+    geom_tile(data = pred.spatial_dat, aes(x = Lon.km*1000, y = Lat.km*1000, fill = exp(est))) +
+    scale_fill_viridis_c( trans = "sqrt",
+                          # trim extreme high values to make spatial variation more visible
+                          na.value = "yellow", limits = c(0, quantile(exp(pred.spatial_dat$est), 0.995))) +
+    geom_sf(data=na_coast_proj,fill = "antique white") +
+    facet_wrap(~year) +
+    theme_light() +
+    labs(fill = "Predicted\nabundance") +
+    labs(x = "Longitude", y = "Latitude")+
+    ggtitle(paste("Prediction for", yr),
+            subtitle = paste("maximum estimated abundance =", round(max(exp(pred.spatial_dat$est)))))
+  
+  pred.spatial_dat <- subset(pred.spatial_dat, select = -c(year_f) )
+  predsJ_df <- rbind(predsJ_df, pred.spatial_dat)
+  
+  
+  # now make the latitude plots 
+  
+  latGroups <- pred.spatial_dat %>%
+    filter(depth <= 300) %>%
+    group_by(Lat.km) %>%
+    summarize(density = mean(exp(est)))  %>%
+    mutate(density = density / sum(density))
+  
+  ggplot(data = dat, aes(Lat.km, density)) + geom_line() +
+    theme(legend.position="none") +
+    ggtitle(paste("Latitude Distribution for", yr))
+  
+  latGroups$year <- rep(yr, length(latGroups$Lat.km))
+  
+  latsJ_df <- rbind(latsJ_df, latGroups)
+
+}
+
+```
+
+now make some pretty little plots to check things out 
+```{r}
+
+for (yr in unique(latsJ_df$year)) {
+  
+  curr_pred <- subset(predsJ_df, year == yr)
+  curr_lat <- subset(latsJ_df, year == yr)
+  
+  
+
+   map_data <- rnaturalearth::ne_countries(
+      scale = "large",
+      returnclass = "sf", country = "United States of America")
+    # Crop the polygon for plotting and efficiency:
+    st_bbox(map_data) # find the rough coordinates
+    
+    
+    ggplot(na_coast_proj) + geom_sf()
+    
+    sf::st_boundary(na_coast_proj)
+    
+    par(mfrow =c(1,1))
+    
+    print(ggplot() + 
+      geom_tile(data = curr_pred, aes(x = Lon.km*1000, y = Lat.km*1000, fill = exp(est))) +
+      scale_fill_viridis_c( trans = "sqrt",
+                            # trim extreme high values to make spatial variation more visible
+                            na.value = "yellow", limits = c(0, quantile(exp(curr_pred$est), 0.995))) +
+      geom_sf(data=na_coast_proj,fill = "antique white") +
+      facet_wrap(~year) +
+      theme_light() +
+      labs(fill = "Predicted\nabundance") +
+      labs(x = "Longitude", y = "Latitude")+
+      ggtitle(paste("Prediction for", yr),
+              subtitle = paste("maximum estimated abundance =", round(max(exp(curr_pred$est))))))
+    
+    
+    print(ggplot(data = curr_lat, aes(Lat.km, density)) + geom_line() +
+      theme(legend.position="none") +
+      ggtitle(paste("Latitude Distribution for", yr)))
+  
+}
+
+
+
+```
+
+
+
+now compare with the model predicted spread
+```{r}
+
+oceanLatitudes <- c(seq(from = 5113, to = 5168, length.out = 297),
+                    seq(from= 5168,to = 5354, length.out = 1001))
+
+midpoint <- 5205
+
+ratio_df <- data.frame(year = unique(latsJ_df$year))
+ratio_df$sdm <- rep(0, length(ratio_df$year))
+ratio_df$ipm_s <- rep(0, length(ratio_df$year))
+ratio_df$ipm_t <- rep(0, length(ratio_df$year))
+
+
+yrs <- intersect(latsJ_df$year, ocean_trans_df$tag)
+
+for(yr in yrs) {
+  
+  curr_pred <- subset(latsJ_df, year==yr) %>%
+    mutate(sdm = density)
+  
+  curr_pred <- subset(curr_pred, Lat.km >= 5113 & Lat.km <= 5354) %>%
+    mutate(sdm = sdm / sum(sdm))
+  
+  north_pred <- sum(subset(curr_pred, Lat.km >= midpoint & Lat.km <= 5354)$sdm)
+  south_pred <- sum(subset(curr_pred, Lat.km >= 5113 & Lat.km <= midpoint)$sdm)
+  
+  index <- match(yr, ratio_df$year)
+  ratio_df$sdm[index] = north_pred / south_pred
+  
+  plot(curr_pred$Lat.km, curr_pred$sdm, type="l", main=paste("May Distribution for", yr),
+      col="pink", ylim=c(0,0.03))
+  
+  # now do the same thing for ipm predictions COMPASS PREDICTIONS
+  curr_pred <- subset(ocean_snake_df, tag==yr)
+  curr_pred <- data.frame(Lat.km = c(oceanLatitudes),
+                          ipm = c(curr_pred$exp_june[[1]])) %>%
+    mutate(ipm = ipm / sum(ipm))
+
+  north_pred <- sum(subset(curr_pred, Lat.km >= midpoint & Lat.km <= 5354)$ipm)
+  south_pred <- sum(subset(curr_pred, Lat.km >= 5113 & Lat.km <= midpoint)$ipm)
+
+  index <- match(yr, ratio_df$year)
+  ratio_df$ipm_s[index] = north_pred/ south_pred
+  
+  agg_ipm <- rowsum(curr_pred$ipm[1:1290],rep(1:129,each=10))
+  curr_pred <- data.frame(Lat.km = c(seq(from = 5113, to = 5354, length.out = 129)),
+                         ipm = c(agg_ipm))
+
+
+  lines(curr_pred$Lat.km, curr_pred$ipm, type="l", col="darkblue")
+  
+  
+  # now do the same thing for ipm predictions BONNEVILLE + TRANSPORTED PREDICTIONS
+  curr_pred <- subset(ocean_trans_df, tag==yr)
+  curr_pred <- data.frame(Lat.km = c(oceanLatitudes),
+                          ipm = c(curr_pred$exp_june[[1]])) %>%
+    mutate(ipm = ipm / sum(ipm))
+
+  north_pred <- sum(subset(curr_pred, Lat.km >= midpoint & Lat.km <= 5354)$ipm)
+  south_pred <- sum(subset(curr_pred, Lat.km >= 5113 & Lat.km <= midpoint)$ipm)
+
+  index <- match(yr, ratio_df$year)
+  ratio_df$ipm_t[index] = north_pred/ south_pred
+  
+  agg_ipm <- rowsum(curr_pred$ipm[1:1290],rep(1:129,each=10))
+  curr_pred <- data.frame(Lat.km = c(seq(from = 5113, to = 5354, length.out = 129)),
+                         ipm = c(agg_ipm))
+
+
+  lines(curr_pred$Lat.km, curr_pred$ipm, type="l", col="lightblue", lty=2)
+  
+  legend("topleft",legend=c("sdmTMB","Compass", "BON"),
+    text.col=c("pink","blue", "lightblue"),lty=c(1,1,2),col=c("pink","blue","lightblue"))
+  
+  
+  
+  
+  
+  
+  
+}
+
+plot(ratio_df$year, ratio_df$sdm, main=paste("Proportion of Fish North of", midpoint),
+     xlab="Year", ylab=paste("Ratio of Fish North / South of", midpoint), pch=16,
+     ylim=c(0,1.5))
+points(ratio_df$year, ratio_df$ipm_s, col="red", pch=15)
+points(ratio_df$year, ratio_df$ipm_t, col="lightblue", pch=17)
+
+  ## Add Legend
+  legend("topleft",legend=c("sdmTMB","Compass", "BON"),
+    text.col=c("black","red", "lightblue"),pch=c(16,15, 17),col=c("black","red","lightblue"))
+  
+  
+  ggplot(data=ratio_df, aes(sdm, ipm_s, col=year) ) + geom_point() +
+  ggtitle("Compass IPM vs sdmTMB Ratio of North / South Fish") +
+  xlab("sdmTMB Ratio") + ylab("IPM Ratio") +
+  #scale_colour_scico(palette = "batlow") +
+  geom_abline(slope=1, intercept = 0)
+
+# now again with the bonneville + transported distributions
+ggplot(data=ratio_df, aes(sdm, ipm_t, col=year) ) + geom_point() +
+  ggtitle("BON IPM vs sdmTMB Ratio of North / South Fish") +
+  xlab("sdmTMB Ratio") + ylab("IPM Ratio") +
+  #scale_colour_scico(palette = "batlow") +
+  geom_abline(slope=1, intercept = 0)
+
+
+
+```
+
+
+
+SAME STUFF FOR JUNE
+```{r}
+
+trawl <- june %>%
+  group_by(year, Lat.km) %>%
+  mutate(numPkm2 = density) %>%
+  summarize(density = sum(numPkm2)) %>%
+   mutate(density = density / sum(density))  %>%
+
+  group_by(year, Diff = cumsum(c(1,diff(Lat.km)) >= 12) ) %>%
+  summarise(Lat.km = mean(Lat.km), density = mean(density)) %>%
+  ungroup() %>% dplyr::select(-Diff)
+
+for (yr in unique(latsJ_df$year)) {
+  
+  curr_pred <- subset(predsJ_df, year == yr) %>%
+    filter(depth <= 300)
+  curr_lat <- subset(latsJ_df, year == yr)
+  
+  
+
+   map_data <- rnaturalearth::ne_countries(
+      scale = "large",
+      returnclass = "sf", country = "United States of America")
+    # Crop the polygon for plotting and efficiency:
+    st_bbox(map_data) # find the rough coordinates
+    
+    
+    ggplot(na_coast_proj) + geom_sf()
+    
+    sf::st_boundary(na_coast_proj)
+    
+    par(mfrow =c(1,1))
+    
+    print(ggplot() + 
+      geom_tile(data = curr_pred, aes(x = Lon.km*1000, y = Lat.km*1000, fill = exp(est))) +
+      scale_fill_viridis_c( trans = "sqrt",
+                            # trim extreme high values to make spatial variation more visible
+                            na.value = "yellow", limits = c(0, quantile(exp(curr_pred$est), 0.995))) +
+      geom_sf(data=na_coast_proj,fill = "antique white") +
+      facet_wrap(~year) +
+      theme_light() +
+      labs(fill = "Predicted\nabundance") +
+      labs(x = "Longitude", y = "Latitude")+
+      ggtitle(paste("Prediction for", yr),
+              subtitle = paste("maximum estimated abundance =", round(max(exp(curr_pred$est))))))
+    
+    # grab the associated actual trawl data  
+    curr_trawl <- subset(trawl, year==yr) 
+    
+    #find division parameter for ease of graphing 
+    d <- max(curr_lat$density, na.rm=T) / max(curr_trawl$density, na.rm=T)
+    
+    curr_trawl <- curr_trawl %>%
+      mutate(density = density * d)
+    
+    
+    print(ggplot() + geom_line(data = curr_lat, aes(Lat.km, density, col="darkred")) +
+      geom_point(data = curr_trawl, aes(Lat.km, density, col="darkblue")) +
+        geom_line(data = curr_trawl, aes(Lat.km, density, col="darkblue")) +
+      theme(legend.position="none") +
+      ggtitle(paste("Latitude Distribution for", yr)))
+  
+}
+
+
+
+
+```
+but before we go to the may data, here is the comparison between the all-year
+june sdmTMB and the trawl data itself
+```{r}
+
+pred <- pred.spatial_june %>%
+  filter(depth <= 300)
+
+
+
+for (yr in unique(pred$year)) {
+  
+  curr_lat <- pred %>%
+    group_by(year, Lat.km) %>%
+    summarize(density = mean(exp(est)))  %>%
+    mutate(density = density / sum(density))
+  
+  curr_trawl <- subset(trawl, year==yr)
+  
+  
+  
+  print(ggplot() + geom_line(data=curr_lat, aes(Lat.km, density, col="darkred")) +
+    geom_point(data=curr_trawl, aes(Lat.km, density, col="darkblue")) +
+    geom_line(data=curr_trawl, aes(Lat.km, density, col="darkblue")) +
+      theme(legend.position="none") +
+      ggtitle(paste("Latitude Distribution for", yr)))
+  
+  
+  
+  
+  
+  
+}
+
+
+
+
+
+
+
+```
+
+
+
+and again
+```{r}
+
+oceanLatitudes <- c(seq(from = 5113, to = 5168, length.out = 297),
+                    seq(from= 5168,to = 5354, length.out = 1001))
+
+midpoint <- 5300
+
+
+yrs <- c(1999,2000,2001,2002,2003,2005,2006,2007,2008,2009,2010,2011,2012,2015,2016,2017,2022,2023)
+
+ratio_df <- data.frame(year = yrs)
+ratio_df$sdm <- rep(0, length(ratio_df$year))
+ratio_df$ipm_s <- rep(0, length(ratio_df$year))
+ratio_df$ipm_t <- rep(0, length(ratio_df$year))
+
+
+
+for(yr in yrs) {
+  
+  curr_pred <- subset(latsJ_df, year==yr) %>%
+    mutate(sdm = density)
+  
+  curr_pred <- subset(curr_pred, Lat.km >= 5113 & Lat.km <= 5354)
+  
+  north_pred <- sum(subset(curr_pred, Lat.km >= midpoint & Lat.km <= 5354)$sdm)
+  south_pred <- sum(subset(curr_pred, Lat.km >= 5113 & Lat.km <= midpoint)$sdm)
+  
+  index <- match(yr, ratio_df$year)
+  ratio_df$sdm[index] = north_pred / south_pred
+  
+  plot(curr_pred$Lat.km, curr_pred$sdm, type="l", main=paste("June Distribution for", yr),
+      col="pink", ylim=c(0,0.05))
+  
+  # now do the same thing for ipm predictions COMPASS PREDICTIONS
+  curr_pred <- subset(ocean_snake_df, tag==yr)
+  curr_pred <- data.frame(Lat.km = c(oceanLatitudes),
+                          ipm = c(curr_pred$exp_june[[1]])) %>%
+    mutate(ipm = ipm / sum(ipm))
+
+  north_pred <- sum(subset(curr_pred, Lat.km >= midpoint & Lat.km <= 5354)$ipm)
+  south_pred <- sum(subset(curr_pred, Lat.km >= 5113 & Lat.km <= midpoint)$ipm)
+
+  index <- match(yr, ratio_df$year)
+  ratio_df$ipm_s[index] = north_pred/ south_pred
+  
+  agg_ipm <- rowsum(curr_pred$ipm[1:1290],rep(1:129,each=10))
+  curr_pred <- data.frame(Lat.km = c(seq(from = 5113, to = 5354, length.out = 129)),
+                         ipm = c(agg_ipm))
+
+
+  lines(curr_pred$Lat.km, curr_pred$ipm, type="l", col="darkblue")
+  
+  
+  # now do the same thing for ipm predictions BONNEVILLE + TRANSPORTED PREDICTIONS
+  curr_pred <- subset(ocean_trans_df, tag==yr)
+  curr_pred <- data.frame(Lat.km = c(oceanLatitudes),
+                          ipm = c(curr_pred$exp_june[[1]])) %>%
+    mutate(ipm = ipm / sum(ipm))
+
+  north_pred <- sum(subset(curr_pred, Lat.km >= midpoint & Lat.km <= 5354)$ipm)
+  south_pred <- sum(subset(curr_pred, Lat.km >= 5113 & Lat.km <= midpoint)$ipm)
+
+  index <- match(yr, ratio_df$year)
+  ratio_df$ipm_t[index] = north_pred/ south_pred
+  
+  agg_ipm <- rowsum(curr_pred$ipm[1:1290],rep(1:129,each=10))
+  curr_pred <- data.frame(Lat.km = c(seq(from = 5113, to = 5354, length.out = 129)),
+                         ipm = c(agg_ipm))
+
+
+  lines(curr_pred$Lat.km, curr_pred$ipm, type="l", col="lightblue", lty=2)
+  
+  legend("topright",legend=c("sdmTMB","Compass", "BON"),
+    text.col=c("pink","blue", "lightblue"),lty=c(1,1,2),col=c("pink","blue","lightblue"))
+  
+  
+  
+  
+  
+  
+  
+}
+
+plot(ratio_df$year, ratio_df$sdm, main=paste("Proportion of Fish North of", midpoint),
+     xlab="Year", ylab=paste("Ratio of Fish North / South of", midpoint), pch=16,
+     ylim=c(0,8))
+points(ratio_df$year, ratio_df$ipm_s, col="red", pch=15)
+points(ratio_df$year, ratio_df$ipm_t, col="lightblue", pch=17)
+
+  ## Add Legend
+  legend("topright",legend=c("sdmTMB","Compass", "BON"),
+    text.col=c("black","red", "lightblue"),pch=c(16,15, 17),col=c("black","red","lightblue"))
+  
+  
+  ggplot(data=ratio_df, aes(sdm, ipm_s, col=year) ) + geom_point() +
+  ggtitle("Compass IPM vs sdmTMB Ratio of North / South Fish") +
+  xlab("sdmTMB Ratio") + ylab("IPM Ratio") +
+  #scale_colour_scico(palette = "batlow") +
+  geom_abline(slope=1, intercept = 0)
+
+# now again with the bonneville + transported distributions
+ggplot(data=ratio_df, aes(sdm, ipm_t, col=year) ) + geom_point() +
+  ggtitle("BON IPM vs sdmTMB Ratio of North / South Fish") +
+  xlab("sdmTMB Ratio") + ylab("IPM Ratio") +
+  #scale_colour_scico(palette = "batlow") +
+  geom_abline(slope=1, intercept = 0)
+
+
+
+
+
+
+```
+
+
+now again but with the sdmTMB calculated for all june years
+```{r}
+
+midpoint <- 5300
+
+
+yrs <- c(1999,2000,2001,2002,2003,2005,2006,2007,2008,2009,2010,2011,2012,2015,2016,2017,2022,2023)
+
+ratio_df <- data.frame(year = yrs)
+ratio_df$sdm <- rep(0, length(ratio_df$year))
+ratio_df$ipm_s <- rep(0, length(ratio_df$year))
+ratio_df$ipm_t <- rep(0, length(ratio_df$year))
+
+
+for (yr in yrs) {
+  
+  # isolate the current year 
+  curr_pred <- subset(pred.spatial_june, year==yr) %>%
+    group_by(Lat.km) %>%
+    summarize(sdm = sum(exp(est))) %>%
+    mutate(sdm = sdm / sum(sdm))
+  
+  curr_pred <- subset(curr_pred, Lat.km >= 5113 & Lat.km <= 5354)
+  
+  north_pred <- sum(subset(curr_pred, Lat.km >= midpoint & Lat.km <= 5354)$sdm)
+  south_pred <- sum(subset(curr_pred, Lat.km >= 5113 & Lat.km <= midpoint)$sdm)
+  
+  index <- match(yr, ratio_df$year)
+  ratio_df$sdm[index] = north_pred / south_pred
+
+  
+  plot(curr_pred$Lat.km, curr_pred$sdm, type="l", main=paste("June Distribution for", yr),
+      col="pink", ylim=c(0,0.05))
+  
+  
+  # now do the same thing for ipm predictions COMPASS PREDICTIONS
+  curr_pred <- subset(ocean_snake_df, tag==yr)
+  curr_pred <- data.frame(Lat.km = c(oceanLatitudes),
+                          ipm = c(curr_pred$exp_june[[1]])) %>%
+    mutate(ipm = ipm / sum(ipm))
+
+  north_pred <- sum(subset(curr_pred, Lat.km >= midpoint & Lat.km <= 5354)$ipm)
+  south_pred <- sum(subset(curr_pred, Lat.km >= 5113 & Lat.km <= midpoint)$ipm)
+
+  index <- match(yr, ratio_df$year)
+  ratio_df$ipm_s[index] = north_pred/ south_pred
+  
+  agg_ipm <- rowsum(curr_pred$ipm[1:1290],rep(1:129,each=10))
+  curr_pred <- data.frame(Lat.km = c(seq(from = 5113, to = 5354, length.out = 129)),
+                         ipm = c(agg_ipm))
+
+
+  lines(curr_pred$Lat.km, curr_pred$ipm, type="l", col="darkblue")
+  
+  
+  # now do the same thing for ipm predictions BONNEVILLE + TRANSPORTED PREDICTIONS
+  curr_pred <- subset(ocean_trans_df, tag==yr)
+  curr_pred <- data.frame(Lat.km = c(oceanLatitudes),
+                          ipm = c(curr_pred$exp_june[[1]])) %>%
+    mutate(ipm = ipm / sum(ipm))
+
+  north_pred <- sum(subset(curr_pred, Lat.km >= midpoint & Lat.km <= 5354)$ipm)
+  south_pred <- sum(subset(curr_pred, Lat.km >= 5113 & Lat.km <= midpoint)$ipm)
+
+  index <- match(yr, ratio_df$year)
+  ratio_df$ipm_t[index] = north_pred/ south_pred
+  
+  agg_ipm <- rowsum(curr_pred$ipm[1:1290],rep(1:129,each=10))
+  curr_pred <- data.frame(Lat.km = c(seq(from = 5113, to = 5354, length.out = 129)),
+                         ipm = c(agg_ipm))
+
+
+  lines(curr_pred$Lat.km, curr_pred$ipm, type="l", col="lightblue", lty=2)
+  
+  legend("topright",legend=c("sdmTMB","Compass", "BON"),
+    text.col=c("pink","blue", "lightblue"),lty=c(1,1,2),col=c("pink","blue","lightblue"))
+  
+  
+  
+  
+}
+
+#ratio_df <- subset(ratio_df, year <= 2017)
+
+plot(ratio_df$year, ratio_df$sdm, main=paste("Proportion of Fish North of", midpoint),
+     xlab="Year", ylab=paste("Ratio of Fish North / South of", midpoint), pch=16,
+     ylim=c(0,8))
+points(ratio_df$year, ratio_df$ipm_s, col="red", pch=15)
+points(ratio_df$year, ratio_df$ipm_t, col="lightblue", pch=17)
+
+  ## Add Legend
+  legend("topright",legend=c("sdmTMB","Compass", "BON"),
+    text.col=c("black","red", "lightblue"),pch=c(16,15, 17),col=c("black","red","lightblue"))
+  
+    ggplot(data=ratio_df, aes(sdm, ipm_s, col=year) ) + geom_point() +
+  ggtitle("Compass IPM vs sdmTMB Ratio of North / South Fish") +
+  xlab("sdmTMB Ratio") + ylab("IPM Ratio") +
+  #scale_colour_scico(palette = "batlow") +
+  geom_abline(slope=1, intercept = 0)
+
+# now again with the bonneville + transported distributions
+ggplot(data=ratio_df, aes(sdm, ipm_t, col=year) ) + geom_point() +
+  ggtitle("BON IPM vs sdmTMB Ratio of North / South Fish") +
+  xlab("sdmTMB Ratio") + ylab("IPM Ratio") +
+  #scale_colour_scico(palette = "batlow") +
+  geom_abline(slope=1, intercept = 0)
+
+
+
+
+
+```
+
+abundance index plots
+```{r}
+
+ggplot(data=b_index, aes(m_log_est, j_log_est, col=year)) + geom_point() +
+  ggtitle("Correlation Between May and June Abundances") +
+  xlab("May log Abundance") + ylab("June log Abundance")
+
+#interesting that it's not super correlated (could speak to migration movement but hard to say)
+
+
+
+```

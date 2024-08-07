@@ -1,0 +1,1599 @@
+---
+title: "testing"
+author: "Katie Hippe"
+date: "2024-06-11"
+output: html_document
+---
+ATTEMPT 2: from 2 code no mods
+
+00- get set up 
+```{r}
+
+
+#devtools::install_github(repo = "https://github.com/hrue/r-inla", ref = "stable", subdir = "rinla", build = FALSE)
+#library(INLA)
+
+library(inlabru)
+library(sdmTMB)
+library(tidyverse)
+library(ggplot2)
+library(visreg)
+library(marmap)
+library(lubridate)
+library(sf)
+library(sp)
+library(raster)
+library(grDevices)
+library(fmesher)
+
+devtools::install_github("mdsumner/distancetocoast")
+
+#remotes::install_github("pbs-assess/sdmTMBextra", dependencies = TRUE)
+
+#library(distancetocoast)
+```
+
+01- load data
+```{r}
+# JSOES trawl data from Cheryl Morgan, November 27 2023
+rawdat <- read.csv(file="Trawl_Erica_Mason_11.27.23.csv") 
+rawdat_2 <- read.csv(file="Trawl_FM_Liner_Erica_Mason_11.27.23.csv")
+
+str(rawdat)
+#names(rawdat)
+
+# species of interest
+# "California.market.squid__"       
+# "Chinook.salmon_yearling_Interior_Sp"            
+# "Sablefish__"                                                 
+# "Sea.nettle__"                                   
+# "Water.jelly__"   
+
+```
+
+02- tidy data p1: rename and idenfity what's missing
+```{r}
+d <- rawdat %>% 
+  dplyr::select(Sample.Date,
+                Month,
+                Year,
+                Station.Code,
+                Mid_Lat,
+                Mid_Long,
+                Stn_Depth_m,
+                nmi_From_Shore,
+                Start_Time,
+                California.market.squid__,
+                Chinook.salmon_yearling_Interior_Sp,   
+                Sablefish__,
+                Sea.nettle__,
+                Water.jelly__) %>% 
+  rename(date_ch = 'Sample.Date',
+         month = 'Month',
+         year = 'Year',
+         stn = 'Station.Code',
+         latdd = 'Mid_Lat',
+         londd = 'Mid_Long',
+         depth_m = 'Stn_Depth_m',
+         dist_nmi = 'nmi_From_Shore',
+         numPkm2 = 'Chinook.salmon_yearling_Interior_Sp') %>%   # substitute species name here 
+  mutate(date = lubridate::mdy(date_ch),
+         week = epiweek(date),
+         yday = yday(date),
+         yday2 = (yday(date))^2,
+         dist_km = dist_nmi * 1.852) %>% 
+  drop_na(latdd,londd) #need to fill in station lat lon in raw data file
+
+# check for NAs -- sdmTMB does not allow for NAs in covariate data (however,
+# year can be a smoothed covariate if missing some years)
+
+which(is.na(d$date)) == TRUE
+which(is.na(d$depth_m)) == TRUE           # 8 missing depths
+which(is.na(d$dist_km)) == TRUE           # 40 missing distances
+which(is.na(d$numPkm2)) == TRUE
+which(is.na(d$latdd)) == TRUE             # 2 missing lats
+which(is.na(d$londd)) == TRUE             # 2 missing lons
+```
+
+02- tidy data p2 find missing values 
+```{r}
+# format GPS coordinates for sdmTMB
+
+# project our spatial data:
+# WGS84 (EPSG: 4326) is the CRS commonly used by organizations that provide 
+# GIS data for the entire globe or many countries. CRS used by Google Earth. 
+# So, if you have lat/long GPS data, WGS84 is the right CPS to use. 
+
+# Go get missing depth data using a NOAA raster file
+# Alternatively, you can use the JSOES nominal station file and grab the approx. station depth and
+# update the missing values manually
+# However, I've included the steps below because we may need to fill in other missing data from existing rasters (distance to shore, etc.)
+
+# First, create coordinate df and convert into an sf object and assign CRS
+# coords for rows with missing depths
+
+coords <- d %>% 
+  filter(is.na(depth_m)==TRUE) %>% 
+  dplyr::select(date,latdd,londd)
+
+coords$ID <- seq(1,nrow(coords),1)
+
+check <- d %>% 
+  filter(is.na(depth_m)==FALSE)
+
+coords_sdf <- st_as_sf(coords, coords = c("londd", "latdd"), crs = "epsg:4326")
+
+st_crs(coords_sdf) #check that CRS was properly assigned
+
+# Get bathymetric data
+range(d$latdd)     # 44.20883 48.35350
+range(d$londd)     # -125.4257 -123.9727
+JSOES_bathy = marmap::as.raster(getNOAA.bathy(-126, -123.5, 49, 43, res=0.25, keep=TRUE))
+plot(JSOES_bathy)
+st_crs(JSOES_bathy)
+
+library(raster)
+bathy <- projectRaster(JSOES_bathy, crs = "epsg:4326")
+st_crs(bathy)
+
+depth_max <- raster::extract(bathy,           # raster layer
+                             coords_sdf,      # SPDF with centroids for buffer
+                             fun=max,         # what value to extract
+                             df=TRUE)         # return a dataframe? 
+
+
+depth_max.a <- depth_max %>% 
+  mutate(btm_depth = layer * -1)
+
+depth_max.b <- left_join(depth_max.a,coords) # grab associated data in d
+
+dat.test <- d %>% 
+  left_join(depth_max.b %>%
+              dplyr::select(date,btm_depth,latdd,londd))
+
+dat.test.update <- dat.test %>%              # create a new column depth w/o missing data
+  mutate(depth = case_when(depth_m >0 ~ depth_m,
+                           TRUE ~ btm_depth)) 
+
+# join this table with d
+d.updated <- dat.test.update %>% 
+  left_join(d %>%
+              dplyr::select(year,month,week,yday,date,
+                            dist_km,latdd,londd,numPkm2))
+
+# for filling in missing distance to shore data:
+
+# Get distance to shore raster
+devtools::install_github("mdsumner/distancetocoast")
+library(distancetocoast)
+library(viridis)
+
+# grab raster
+dist <- crop(distance_to_coastline_10, extent(-126, -123.5, 43, 49)) # -126, -124, 43, 49
+plot(dist,col = viridis::viridis(64))
+
+st_crs(dist)
+
+dist_proj <- raster::projectRaster(dist, crs = 4326)
+
+# coords for rows with missing distances
+
+coords <- d %>% 
+  filter(is.na(dist_km)==TRUE) %>% 
+  dplyr::select(date,latdd,londd)
+
+coords$ID <- seq(1,nrow(coords),1)
+
+check <- d %>% 
+  filter(is.na(dist_km)==FALSE)
+
+coords_sdf <- st_as_sf(coords, coords = c("londd", "latdd"), crs = "epsg:4326")
+
+st_crs(coords_sdf) #check that CRS was properly assigned
+
+# calculate mean distance to shore for each grid cell
+dist_mean <- raster::extract(dist_proj,        # raster layer
+                             coords_sdf,       # SPDF with centroids for buffer
+                             fun=mean,         # what value to extract
+                             df=TRUE)          # return a dataframe? 
+
+dist_mean.b <- dist_mean %>% 
+  mutate(distance = layer/1000)              # convert from m to km
+
+dist_mean.c <- left_join(dist_mean.b,coords) # grab associated coordinates
+
+d.updated.2 <- d.updated %>%                 # now join with our file containing updated depth data
+  left_join(dist_mean.c %>%
+              dplyr::select(date,distance,latdd,londd))
+
+d.final <- d.updated.2 %>%                 # create a new column dist w/o missing data
+  mutate(dist = case_when(dist_km >0 ~ dist_km,
+                           TRUE ~ distance)) %>%
+  dplyr::select(year,month,week,yday,date,
+                depth,dist,latdd,londd,numPkm2)
+
+```
+
+02 - tidy data p3 formatting issues
+```{r}
+# format GPS locations for sdmTMB (need to be in meters)
+
+# first we need to convert lat lon to UTMs
+# WGS84 (EPSG: 4326) is the CRS commonly used by organizations that provide 
+# GIS data for the entire globe or many countries. CRS used by Google Earth. 
+# So, if you have lat/long GPS data, WGS84 is the right CRS to use. 
+# To convert to UTMs, then we need WGS 84 / UTM zone 10N (CRS = 32610)
+utm_crs <- get_crs(d.final, c("londd", "latdd")) # check that
+
+d.final <- add_utm_columns(
+  d.final,
+  ll_names = c("londd", "latdd"),
+  ll_crs = 4326,
+  utm_names = c("Lon.km", "Lat.km"),
+  utm_crs = utm_crs,
+  units = c("km")
+)
+
+# add a year as factor column and scale the depth and dist to shore columns
+
+df <- d.final %>%
+  arrange(year,month,yday) %>% 
+  mutate(
+    year_f = as.factor(year),
+    scale_depth = scale(as.numeric(depth))[ , 1],
+    scale_dist2shore = scale(as.numeric(dist))[ , 1])
+
+head(df)
+
+df$rownum <- seq(1,nrow(df),1)
+
+write.csv(df,file="01_tidy_data/df_JSOES_Chinook_salmon_yearling_Interior_Sp.csv")
+
+
+df %>% 
+  group_by(year) %>% 
+  summarise(n=n(),min= min(numPkm2), max= max(numPkm2), mean = mean(numPkm2))
+
+
+```
+
+03 - make a mesh p2 account for overlab with land
+```{r}
+# code below is used to account for any overlap of mesh with land
+#install.packages("rnaturalearth")
+#install.packages("rnaturalearthdata")
+
+df <- read.csv("01_tidy_data/df_JSOES_Chinook_salmon_yearling_Interior_Sp.csv") %>%
+  mutate(scale_lat = scale(as.numeric(Lat.km))[ , 1])
+
+library(rnaturalearth)
+
+map_data <- rnaturalearth::ne_countries(
+  scale = "medium",
+  returnclass = "sf", country = "United States of America")
+
+# Crop the polygon for plotting and efficiency:
+st_bbox(map_data) # find the rough coordinates
+
+na_coast <- suppressWarnings(suppressMessages(
+  st_crop(map_data,
+          c(xmin = -123, ymin = 43, xmax = -127, ymax = 49)))) # -127, -123, 49, 43,
+
+na_coast_proj <- sf::st_transform(na_coast, crs = 32610)
+
+# Project our survey data coordinates:
+survey <- df %>% dplyr::select(londd, latdd, numPkm2) %>%
+  st_as_sf(crs = 4326, coords = c("londd", "latdd")) %>% 
+  st_transform(32610)
+
+# Plot our coast and survey data:
+ggplot(na_coast_proj) +
+  geom_sf() +
+  geom_sf(data = survey, size = 0.5) 
+```
+plot labels for our survey locations 
+```{r}
+
+lf <- data.frame(
+  x = c(-124,-124,-124,-124,-124,-124,-124,-124,-124,-124,-124,-124),
+  y = c(48.337, 48.228, 47.92, 47.53, 47, 46.67, 46.17, 45.73, 45.48, 45.05, 44.67, 44.25),
+  names = c('Tatoosh Island','Father and Son', 'La Push', 'Queets River', 'Grays Harbor', 'Willapa Bay', 'Columbia River', 'Cape Falcon', 'Cape Meares', 'Cascase Head', 'Newport', 'Cape Perpetua')
+) %>%
+  st_as_sf(coords = c("x", "y"), crs = 4326) 
+
+ggplot(na_coast_proj) +
+  geom_sf() +
+  geom_sf_text(data = lf, aes(label = names))
+
+ggsave(filename = "03_plots/Stations_labelled.png",
+       dpi = 600,
+       width=20,
+       height=20,
+       units="cm")
+
+
+
+
+```
+
+03 - testing addBarrierMesh()
+```{r}
+library(sdmTMBextra)
+library(INLA)
+library(assertthat)
+
+mesh = make_mesh(df, xy_cols = c("Lon.km","Lat.km"), cutoff = 10, type = "kmeans")
+
+mesh_temp <- mesh
+#mesh_temp$manifold <- "R"
+#mesh_temp$mesh$manifold <- "R"
+
+
+bspde <- sdmTMBextra::add_barrier_mesh(
+  mesh_temp, na_coast_proj, range_fraction = 0.1,
+  proj_scaling = 1000, plot = TRUE
+)
+```
+
+
+more exciting plot + saves
+```{r}
+df$X1000 <- df$Lon.km * 1000
+df$Y1000 <- df$Lat.km * 1000
+
+mesh_1000 <- make_mesh(df, xy_cols = c("X1000", "Y1000"), cutoff = 10 * 1000)
+
+bspde_1000 <- add_barrier_mesh(
+  mesh_1000, na_coast_proj, range_fraction = 0.1,
+  proj_scaling = 1, plot = TRUE
+)
+
+mesh_df_water <- bspde_1000$mesh_sf[bspde$normal_triangles, ]
+mesh_df_land <- bspde_1000$mesh_sf[bspde$barrier_triangles, ]
+
+library(inlabru)      # to convert mesh to spatial feature
+
+blues <- RColorBrewer::brewer.pal(5, "Blues")
+
+ggplot(na_coast_proj) +
+  geom_sf(fill = "antique white") +
+  geom_sf(data = mesh_df_water, size = 1, colour = "blue") +
+  geom_sf(data = mesh_df_land, size = 1, colour = "green") +
+  inlabru::gg(bspde_1000$mesh) +
+  theme(panel.background = element_rect(fill = "aliceblue"),
+        legend.key = element_rect(fill = "aliceblue")) +
+  labs(x = "Longitude", y = "Latitude")+
+  scale_x_continuous(breaks = seq(-126, -123, by = 1)) +
+  ggtitle('sdmTMB Mesh - JSOES Trawls',subtitle = 'Chinook_salmon_yearling_Interior_Sp')
+
+ggsave(filename = "03_plots/mesh_JSOES_Chinook_salmon_yearling_Interior_Sp.png",
+       dpi = 600,
+       width=25,
+       height=15,
+       units="cm")
+
+ggplot(na_coast_proj) +
+  geom_sf(fill = "antique white") +
+  inlabru::gg(bspde_1000$mesh) +
+  geom_point(data=df,alpha = 0.8, aes(Lon.km * 1000, Lat.km * 1000, size = numPkm2),colour = blues[4])+
+  theme(panel.background = element_rect(fill = "aliceblue"),
+        legend.key = element_rect(fill = "aliceblue")) +
+  labs(x = "Longitude", y = "Latitude")+
+  scale_x_continuous(breaks = seq(-126, -123, by = 1)) +
+  labs(subtitle = "Chinook_salmon_yearling_Interior_Sp")+
+  guides(size= guide_legend(title="Standardized density\n(no./km^2)"))
+
+ggsave(filename = "03_plots/rawDensities_JSOES_Chinook_salmon_yearling_Interior_Sp.png",
+       dpi = 600,
+       width=25,
+       height=15,
+       units="cm")
+
+ggplot(na_coast_proj) +
+  geom_sf(fill = "antique white") +
+  inlabru::gg(bspde_1000$mesh) +
+  geom_point(data=df,alpha = 0.8, aes(Lon.km * 1000, Lat.km * 1000, size = numPkm2,group=year),colour = blues[4])+
+  theme(panel.background = element_rect(fill = "aliceblue"),
+        legend.key = element_rect(fill = "aliceblue")) +
+  facet_wrap(~ year)+
+  labs(x = "Longitude", y = "Latitude")+
+  scale_x_continuous(breaks = seq(-126, -123, by = 1)) +
+  labs(subtitle = "JSOES Yearlings")+
+  guides(size= guide_legend(title="Standardized density\n(no./km^2)"))
+
+ggsave(filename = "03_plots/rawDensitiesByYr_JSOES_Chinook_salmon_yearling_Interior_Sp.png",
+       dpi = 600,
+       width=25,
+       height=15,
+       units="cm")
+
+save(na_coast_proj,mesh_df_land,mesh_df_water,bspde,bspde_1000,df,file="01_tidy_data/JSOES_Chinook_salmon_yearling_Interior_Sp_dat.Rdata")
+
+
+
+```
+
+part 2: prediction grids and fit checks
+
+01- load packages
+```{r}
+library(INLA)
+library(fmesher)
+library(sdmTMB)
+library(sdmTMBextra)
+library(tidyverse)
+library(ggplot2)
+library(visreg)
+library(marmap)
+library(lubridate)
+library(sf)
+library(sp)
+library(raster)
+library(grDevices)
+#library(distancetocoast)
+library(viridis)
+library(patchwork)  
+library(assertthat)
+
+```
+
+02- load data 
+```{r}
+#df <- read.csv("01_tidy_data/df_JSOES_Chinook_salmon_yearling_Interior_Sp.csv") # data formatted with format_raw_data.R
+
+dat <- df %>% 
+  dplyr::rename(density = 'numPkm2') %>% 
+  dplyr::select(density,yday,month,week,year,year_f,depth,scale_depth,Lon.km,
+                Lat.km, scale_dist2shore, scale_lat) # deleted station code
+
+may <- subset(dat, month =="May")
+#may_test <- subset(may, year <= 2018)
+june <- subset(dat, month =="June")
+
+names(may)
+names(june)
+
+```
+
+03- model fit
+```{r}
+#mesh <- make_mesh(pcod, xy_cols = c("X", "Y"), cutoff = 10)
+
+#may <- may_test
+
+may$scale_yday <- as.numeric(scale(may$yday))
+
+mesh_may = make_mesh(may, xy_cols = c("Lon.km","Lat.km"), cutoff = 10, type = "kmeans")
+
+mesh_june = make_mesh(june, xy_cols = c("Lon.km","Lat.km"), cutoff = 10, type = "kmeans")
+
+bspde_may <- sdmTMBextra::add_barrier_mesh(
+  mesh_may, na_coast_proj, range_fraction = 0.1,
+  proj_scaling = 1000, plot = TRUE
+)
+
+bspde_june <- sdmTMBextra::add_barrier_mesh(
+  mesh_june, na_coast_proj, range_fraction = 0.1,
+  proj_scaling = 1000, plot = TRUE
+)
+
+# m1a <- sdmTMB(
+#   formula = density ~ 0 + as.factor(year),
+#   data = may,
+#   mesh = bspde_may,
+#   family = tweedie(link = "log"),
+#   spatial = "on",
+#   spatiotemporal = "iid",
+#   #spatial_varying = ~ scale_yday,
+#   time = "year"
+# )
+# 
+# m1b <- sdmTMB(
+#   formula = density ~ 0 + s(scale_dist2shore) + year_f,
+#   data = may,
+#   mesh = bspde_may,
+#   family = tweedie(link = "log"),
+#   spatial = "on",
+#   spatiotemporal = "iid",
+#   #spatial_varying = ~ scale_yday,
+#   time = "year"
+# )
+# 
+# m1c <- sdmTMB(
+#   formula = density ~ 0 + s(scale_depth) + as.factor(year),
+#   data = may,
+#   mesh = bspde_may,
+#   family = tweedie(link = "log"),
+#   spatial = "on",
+#   spatiotemporal = "iid",
+#   #spatial_varying = ~ scale_yday,
+#   time = "year"
+# )
+
+# m2b <- sdmTMB(
+#   formula = density ~ 0 + s(scale_depth) + as.factor(year) + s(yday),
+#   data = may,
+#   mesh = bspde_may,
+#   family = tweedie(link = "log"),
+#   spatial = "on",
+#   spatiotemporal = "iid",
+#   #spatial_varying = ~ scale_yday,
+#   time = "year"
+# )
+# 
+# m2c <- sdmTMB(
+#   formula = density ~ 0 + s(scale_dist2shore) + as.factor(year) + s(yday),
+#   data = may,
+#   mesh = bspde_may,
+#   family = tweedie(link = "log"),
+#   spatial = "on",
+#   spatiotemporal = "iid",
+#   #spatial_varying = ~ scale_yday,
+#   time = "year"
+# )
+
+# m3b <- sdmTMB(
+#   formula = density ~ 0 + s(scale_dist2shore) + as.factor(year),
+#   data = may,
+#   mesh = bspde_may,
+#   family = tweedie(link = "log"),
+#   spatial = "on",
+#   spatiotemporal = "iid",
+#   spatial_varying = ~ scale_yday,
+#   time = "year"
+# )
+
+m4c <- sdmTMB(
+  formula = density ~ 0 + s(scale_depth) + s(scale_lat) + as.factor(year),
+  data = may,
+  mesh = bspde_may,
+  family = tweedie(link = "log"),
+  spatial = "on",
+  spatiotemporal = "iid",
+  #spatial_varying = ~ scale_yday,
+  time = "year"
+)
+
+# m5c <- sdmTMB(
+#   formula = density ~ 0 + s(scale_depth) + as.factor(year) + s(Lat.km),
+#   data = may,
+#   mesh = bspde_may,
+#   family = tweedie(link = "log"),
+#   spatial = "on",
+#   spatiotemporal = "iid",
+#   spatial_varying = ~ scale_yday,
+#   time = "year"
+# )
+
+# m3c <- sdmTMB(
+#   formula = density ~ 0 + s(scale_depth) + as.factor(year) ,
+#   data = may,
+#   mesh = bspde_may,
+#   family = tweedie(link = "log"),
+#   spatial = "on",
+#   spatiotemporal = "iid",
+#   spatial_varying = ~ scale_yday,
+#   time = "year"
+# )
+
+
+# AIC(m1a) # 2187.987       AIC(m3b) 2188.405
+# 
+# AIC(m1b) # 2181.57        AIC(m3c) 2179.768
+# 
+# AIC(m1c) # 2169.464       AIC(m4c) 2166.231!
+# 
+# AIC(m2b) # 2181.518       AIC(m5c) 2167.712
+# 
+# AIC(m2c) # 2190.337
+
+# conclusions here are ultimately depth and lat give best model but not by 
+# very much at all :/ 
+# turning on the spatially varying factor doesn't change anything? 
+# I wonder why 
+
+#fit_june <- sdmTMB(
+ # density ~ 0 + as.factor(year) + s(scale_depth),
+  #data = june,
+  #mesh = bspde_june,
+  #family = tweedie(link = "log"),
+  #spatial = "on",
+  #spatiotemporal = "iid",
+  #time="year"
+#)
+
+
+```
+
+qq-plots:
+```{r}
+fit_may <- m4c
+
+may$resids <- residuals(fit_may) # randomized quantile residuals
+qqnorm(may$resids)
+qqline(may$resids)
+
+# ggplot(may, aes(Lon.km, Lat.km, col = resids)) +
+#   scale_colour_gradient2() +
+#   geom_point() +
+#   facet_wrap(~year) +
+#   coord_fixed()
+
+#visreg(fit_may, xvar = "yday", scale = "response")
+
+ggplot(na_coast_proj) +
+  geom_sf(fill="antique white") +
+  geom_point(data=may, aes(x=Lon.km*1000, y=Lat.km*1000, color = resids)) +
+  scale_colour_gradient2() +
+  facet_wrap(~year) +
+  scale_x_continuous(breaks = seq(-126, -123, by = 1))#+
+  #coord_fixed()
+
+
+ggsave(filename = "03_plots/residuals_map.png",
+       dpi = 600,
+       width=30,
+       height=30,
+       units="cm")
+
+```
+
+
+04 - prediction grid
+```{r}
+# Alternatively, this section can be replaced with its own script file, 
+# the output of which we incorporate into section 05 or other run model scripts.
+
+# we need to use the model to predict onto a spatial grid (geographic region of
+# interest) in order to generate a standardized index of abundance
+
+# since we don't already have a grid, we need to build one...
+# it's important that we also calculate the area of each grid cell since some
+# grid cells along the border of our grid will not be the same area -- we
+# need to be able to account for this later on so the model knows how to 
+# accurately extrapolate densities to
+# come up with annual total abundance across the grid
+
+# see https://github.com/pbs-assess/sdmTMB/discussions/151
+
+# create a polygon based off the mesh boundaries
+new_poly <- st_convex_hull(st_union(bspde_may$mesh_sf))
+plot(new_poly)
+st_crs(new_poly)
+
+# remove land from polygon
+poly <- st_difference(new_poly, na_coast_proj)
+st_crs(poly) 
+plot(poly)
+st_bbox(poly)
+
+
+# create a grid within the polygon using the raster package
+resolution <- 2000 # poly is in meters; 2000 is pretty fine: 2000m x 2000m = 4 km2
+r <- raster::raster(as(poly, "Spatial"), resolution = resolution)
+rr <- raster::rasterize(as(poly, "Spatial"), r, getCover = TRUE)
+plot(rr)
+
+# convert to data frame and calculate grid cell area for each row
+grid <- as.data.frame(raster::rasterToPoints(rr))
+grid$area <- grid$layer * resolution * resolution # meters squared
+grid <- dplyr::filter(grid, area > 0) |> 
+  dplyr::select(-layer)
+
+grid$Lon.km <- grid$x / 1000
+grid$Lat.km <- grid$y / 1000
+grid$area.km <- grid$area / 1e06
+
+
+# plot to see a display of grid cell areas coded by color
+ggplot(grid, aes(Lon.km, Lat.km, colour = area.km)) +
+  geom_tile(width = 10, height = 10, fill = NA) + # in meters
+  scale_colour_viridis_c(direction = -1) +
+  geom_point(size = 0.5) +
+  coord_fixed()
+
+
+# convert to a shapefile using the appropriate crs (we want UTMs) - this is so
+# we can fill in the corresponding missing depth data using a bathymetry raster
+grid_sdf <- st_as_sf(grid, coords = c("x", "y"), crs = "epsg:32610")
+
+
+# If you decide to use bottom depth, you'll need to grab depth data for each grid cell
+# Get bathymetric data for each grid cell, bounding box = -126,42,-123,49
+JSOES_bathy = marmap::as.raster(getNOAA.bathy(-126, -123, 49, 42, res=0.25, keep=TRUE)) # resolution is in minutes
+plot(JSOES_bathy)
+st_crs(JSOES_bathy)
+
+bathy <- projectRaster(JSOES_bathy, crs = "epsg:32610")
+plot(bathy)
+st_crs(bathy)
+
+# see https://www.neonscience.org/resources/learning-hub/tutorials/extract-values-rasters-r for more information
+depth_max <- raster::extract(bathy,           # raster layer
+                             grid_sdf,        # SPDF with centroids for buffer
+                             buffer = 1000,   # buffer size, units depend on CRS; here, extract all depths within a 1000m radius of the grid cell centroid
+                             fun=max,         # what value to extract
+                             df=TRUE)         # return a dataframe?
+
+# translate land or NAs to 0 meters depth (not underwater) - we'll filter these out later
+depth_max.a <- depth_max %>%
+  mutate(depth = case_when(layer > 0 ~ 0,
+                           is.na(layer) ~ 0,
+                           TRUE ~ layer),
+         depth = depth * -1)
+
+# bind depth field with grid data frame
+new_df.depth <- cbind(depth_max.a,grid)
+
+# Here, we're grabbing distance to shore for each grid cell (the shapefile is going to be in UTM (meters))
+ library(distancetocoast)
+ library(viridis)
+
+# grab raster
+dist <- crop(distance_to_coastline_10, extent(-126, -123, 43, 49)) # -126, -124, 43, 49
+plot(dist,col = viridis::viridis(64))
+
+st_crs(dist)
+
+dist_proj <- raster::projectRaster(dist, crs = 4326)
+
+# calculate mean distance to shore for each grid cell
+dist_mean <- raster::extract(dist_proj,        # raster layer
+                             grid_sdf,         # SPDF with centroids for buffer
+                             fun=mean,         # what value to extract
+                             df=TRUE)          # return a dataframe? 
+
+dist_mean.b <- dist_mean %>% 
+  mutate(distance = layer/1000) 
+
+# bind distance field with grid data frame
+new_df.distance <- cbind(dist_mean.b,grid)
+
+# now bind with new_df.depth
+
+new_df.all <- new_df.distance %>% 
+  left_join(new_df.depth %>%
+              dplyr::select(ID,depth))
+
+
+# now expand our data frame to include all covariates in our model (year, day, and
+# lat/lon in kilometers) - this is a necessary step for prediction
+
+# replication factor  
+yrs <- sort(as.vector(unique(may$year))) 
+n <- length(yrs)
+
+# replicate our dataframe for year in our model, call our df, 'new_df'
+new_df <- do.call("rbind", replicate( 
+  n, new_df.all, simplify = FALSE)) 
+
+# add year covariate
+new_df$year_f <-  as.factor(rep(yrs, each = nrow(new_df.all)))
+new_df$year <-  rep(yrs, each = nrow(new_df.all))
+
+# add lat/lon in km
+new_df$Lon.km <- new_df$x / 1000
+new_df$Lat.km <- new_df$y / 1000
+#new_df$Lat.km2 <- new_df$Lat.km^2
+
+# create new area field in km^2
+new_df$area_km2 <- new_df$area / 1e06
+
+
+# let's also add a day column to predict on -- we don't currently have yday in the model,
+# but later (below) we will end up testing a model with yday as a covariate 
+# pick any yday within the range of existing data (day 166 is roughly June 15th)
+
+new_df$yday <- 143 
+
+
+# grab mean and stdev of distance column in dat (survey loc distances)
+# use these to scale prediction grid depths
+mu.dist <- mean(df$dist)     # [1] 27.48336
+sd.dist <- sd(df$dist)       # [1] 17.09894
+
+
+# do the same for depth, if necessary
+mu.depth <- mean(df$depth)     # [1] 114.44797
+sd.depth <- sd(df$depth)       # [1] 117.99652
+
+# do the same for yday
+mu.yday <- mean(df$yday)     # [1] 164.95731
+sd.yday <- sd(df$yday)       # [1] 14.42126
+
+# and for Lat.km
+mu.Lat.km <- mean(df$Lat.km)
+sd.Lat.km <- sd(df$Lat.km)
+
+new_df <- new_df %>% 
+  dplyr::filter(depth > 0,
+                distance > 0) %>% 
+  mutate(scale_dist2shore = (distance - mu.dist) / sd.dist,    # use same name as covariate used in model
+         scale_depth = (depth - mu.depth) / sd.depth,
+         scale_yday = (yday - mu.yday) / sd.yday,
+         scale_lat = (Lat.km - mu.Lat.km) / sd.Lat.km)
+
+
+
+
+
+```
+
+05 - make prediction grid!!
+```{r}
+
+# make predictions
+pred.index = predict(m4c, newdata = new_df, return_tmb_object = TRUE)
+
+# now make index
+# create a vector of grid cell areas for accurate interpolation, otherwise, 
+# get_index() assumes all grid cell areas are equal
+area_vec <- new_df$area_km2
+may_index = get_index(pred.index, bias_correct = TRUE, area = area_vec)
+
+
+```
+
+05.5 - make yearly abundance graph!
+```{r}
+
+ggplot(index, aes(year, log_est)) + geom_line() +
+  geom_ribbon(aes(ymin=log_est-2*se,ymax=log_est+2*se),alpha=0.4) +
+  xlab('Year') + ylab('Ln Abundance') +
+  ggtitle("Log Abundance by Year (During June Survey)")
+
+
+```
+05.7 try it again but with a narrowed scope 
+```{r}
+# assuming we've already run pred.index
+
+new_df_smaller <- subset(new_df, Lat.km >= 5113 & Lat.km <= 5354)
+
+pred.index_smaller = predict(m4c, newdata = new_df_smaller, return_tmb_object = TRUE)
+
+area_vec <- new_df_smaller$area_km2
+index_smaller <- get_index(pred.index_smaller, area = area_vec, bias_correct = TRUE)
+
+
+
+
+```
+
+now another abundance graph
+```{r}
+
+ggplot(index_smaller, aes(year, log_est)) + geom_line() +
+  geom_ribbon(aes(ymin=log_est-2*se,ymax=log_est+2*se),alpha=0.4) +
+  xlab('Year') + ylab('Ln Abundance') +
+  ggtitle("Log Abundance by Year (During June Survey)")
+
+plot(index_smaller$log_est, index$log_est)
+
+
+```
+
+06 - save and plot temporal trends
+
+```{r}
+#save(pred.index,index, file="01_tidy_data/SIA_output.RData")
+
+theme_Publication <- function(base_size=20, base_family="Helvetica") {
+  library(grid)
+  library(ggthemes)
+  (theme_foundation(base_size=base_size, base_family=base_family)
+    + theme(plot.title = element_text(face = "bold",
+                                      size = rel(1),vjust = 0), #hjust = 0.5),
+            # text = element_text(),
+            panel.background = element_rect(colour = NA),
+            plot.background = element_rect(colour = NA),
+            panel.border =  element_blank(),#element_rect(colour = NA),
+            axis.title = element_text(face = "bold",size = rel(1)),
+            axis.title.y = element_text(angle=90,vjust =2),
+            axis.title.x = element_text(vjust = -0.2),
+            axis.text = element_text(), 
+            axis.line = element_line(colour="black"),
+            axis.ticks = element_line(),
+            panel.grid.major.y = element_line(colour="#f0f0f0"),
+            panel.grid.major.x = element_blank(),
+            panel.grid.minor = element_blank(),
+            legend.key = element_rect(colour = NA),
+            legend.position = "right",
+            legend.direction = "vertical",
+            legend.key.size= unit(0.5, "cm"),
+            legend.margin = unit(0, "cm"),
+            legend.title = element_text(face="italic"),
+            plot.margin=unit(c(5,2,2,2),"mm"),
+            strip.background=element_rect(colour="#f0f0f0",fill="#f0f0f0"),
+            strip.text = element_text(face="bold")
+    ))
+  
+}
+
+# on the linear scale
+p1 <- ggplot(index, aes(year, est)) + 
+  # geom_pointrange(aes(ymin=lwr,ymax=upr))+
+  geom_ribbon(aes(ymin=lwr,ymax=upr), fill = "grey90",alpha=0.5) +
+  geom_line(linewidth = 0.5, color = "grey30")+
+  ggtitle("Yearlings")+
+  # ylim(0,3000000)+
+  xlim(1998,2022)+
+  xlab("Year") + ylab("Abundance")
+ # theme_Publication() 
+
+# natural log
+p2 <- ggplot(index, aes(year, log_est)) +
+  geom_ribbon(aes(ymin=log_est-2*se,ymax=log_est+2*se), fill = "grey90",alpha=0.5) +
+  # geom_pointrange(aes(ymin=log_est-2*se,ymax=log_est+2*se)) +
+  geom_line()+
+  # ggtitle("Yearlings")+
+  xlab("Year") + ylab("Ln abundance")+
+  #theme_Publication()+
+  xlim(1998,2022)
+#p2
+
+Y <- (p1 + p2)
+
+
+Y
+
+# ggsave(filename = "03_plots/SIA_Yrlng_2x2Km_m3a.png",
+#        dpi = 600,
+#        width=25,
+#        height=15,
+#        units="cm")
+
+```
+
+07 - plot distributions (hopefully)
+```{r}
+# load libraries ----------------------------------------------------------
+
+library(INLA)
+library(sdmTMB)
+library(tidyverse)
+library(ggplot2)
+library(sf)
+library(sp)
+library(visreg)
+library(marmap)
+library(lubridate)
+# library(s2)
+
+# 01 load data ---------------------------------------------------------------
+#needs to be updated
+#load(file="01_tidy_data/JSOES_Chinook_salmon_yearling_Interior_Sp_dat.RData") # this includes the model fit from m4a.2 distance and spatial varying day of year 
+#load(file="01_tidy_data/newdf4preds_Yearlings.RData") # this includes the model fit from m3a
+
+# predict on new data
+set.seed(011823)
+
+#fit_may <- m4c
+
+pred.spatial_may <- predict(m4c, newdata = new_df, return_tmb_object = FALSE) # return_tmb_object is FALSE (it's true when we want an idex)
+
+# let's save it for plotting later
+save(pred.spatial_may,file="01_tidy_data/spatialpreds_may_m4c.RData")
+
+# plot predicted density --------------------------------------------------
+
+#load(file="01_tidy_data/spatialpreds_m4a2.RData")
+#load(file="01_tidy_data/spatialpreds_m3a.RData")
+```
+
+
+```{r}
+# plot simple maps
+plot_map <- function(dat, column) {
+  ggplot(dat, aes(Lon.km, Lat.km, fill = {{ column }})) +
+    geom_tile() +
+    coord_fixed()
+}
+
+
+plot_map(pred.spatial_june, exp(est)) +
+  scale_fill_viridis_c(
+    trans = "sqrt",
+    # trim extreme high values to make spatial variation more visible
+    na.value = "yellow", limits = c(0, quantile(exp(pred.spatial_june$est), 0.995))
+  ) +
+  facet_wrap(~year) +
+  ggtitle("Prediction (fixed effects + all random effects)",
+          subtitle = paste("maximum estimated density =", round(max(exp(pred.spatial_june$est))))
+  ) 
+
+#plot_map(pred.spatial) +
+ # scale_fill_gradient2() +
+  #facet_wrap(~year) +
+  #ggtitle("Spatiotemporal random effects only")
+
+ggsave(filename = "03_plots/Yearling_JunePredPlot_byYr.png",
+       dpi = 600,
+       width=25,
+       height=25,
+       units="cm")
+
+```
+ 
+ more plotting (make it pretty)
+```{r}
+# plot pretty maps --------------------------------------------------------
+
+
+#library(rgeos)
+library(rnaturalearth)
+#library(rnaturalearthhires)
+# remotes::install_github("r-spatial/s2")
+
+
+map_data <- rnaturalearth::ne_countries(
+  scale = "large",
+  returnclass = "sf", country = "United States of America")
+# Crop the polygon for plotting and efficiency:
+st_bbox(map_data) # find the rough coordinates
+
+
+ggplot(na_coast_proj) + geom_sf()
+
+sf::st_boundary(na_coast_proj)
+
+par(mfrow =c(1,1))
+
+ggplot() + 
+  geom_tile(data = pred.spatial_june, aes(x = Lon.km*1000, y = Lat.km*1000, fill = exp(est))) +
+  scale_fill_viridis_c( trans = "sqrt",
+                        # trim extreme high values to make spatial variation more visible
+                        na.value = "yellow", limits = c(0, quantile(exp(pred.spatial_june$est), 0.995))) +
+  geom_sf(data=na_coast_proj,fill = "antique white") +
+  facet_wrap(~year) +
+  theme_light() +
+  labs(fill = "Predicted\nabundance") +
+  labs(x = "Longitude", y = "Latitude")+
+  ggtitle("Prediction (fixed effects + all random effects)\nYearlings",
+          subtitle = paste("maximum estimated abundance =", round(max(exp(pred.spatial_june$est)))))
+
+
+ggsave(filename = "03_plots/Yearling_June_scaleLat_PredPlot_byYr.png",
+       dpi = 600,
+       width=25,
+       height=25,
+       units="cm")
+```
+anomaly graph?
+```{r}
+plot_map <- function(dat, column) {
+  ggplot(dat, aes(Lon.km, Lat.km, fill = {{ column }})) +
+    geom_raster() +
+    coord_fixed()
+}
+
+plot_map(pred.spatial_may, epsilon_st) +
+  scale_fill_gradient2() +
+  facet_wrap(~year) +
+  ggtitle("Spatiotemporal random effects only")
+
+ggsave(filename = "03_plots/anomaly_graph.png",
+       dpi = 600,
+       width=25,
+       height=25,
+       units="cm")
+
+```
+
+07- making some latitude graphs (hopefully)
+```{r}
+# want to make a function 
+# pred.spatial should contain the info i'm looking for? exp(est)
+library(sp)
+
+coords <- dplyr::select(pred.spatial_june, c('Lon.km','Lat.km')) %>%
+   rename(x = 'Lon.km', y = 'Lat.km')
+
+sputm <- SpatialPoints(coords, proj4string=CRS("+proj=utm +zone=10 +datum=WGS84")) 
+spgeo <- spTransform(sputm, CRS("+proj=longlat +datum=WGS84"))
+lnlt <- as.data.frame(spgeo@coords)
+
+pred.spatial_june$latdd <- lnlt$coords.x2 * 1000
+
+
+# pred.spatial_may <- pred.spatial_may %>%
+#   filter(!grepl('2008', year))
+```
+
+```{r}
+
+pred.spatial_june <- pred.spatial_june %>%
+  filter(depth <= 300 & Lat.km <= 5354 & Lat.km >= 5113)
+
+
+mean_lats <- pred.spatial_june %>%
+  group_by(Lat.km) %>%
+  summarize(density=mean(exp(est))) %>%
+  mutate(density=density / sum(density))
+
+plot_lats <- function(dat) {
+  latGroups <- dat %>%
+    group_by(year, Lat.km) %>%
+    summarize(density = mean(exp(est)))  %>%
+    mutate(density = density / sum(density))
+  
+  ggplot() + geom_line(data=mean_lats, aes(Lat.km, density, color = density)) +
+    geom_line(data=latGroups, aes(Lat.km, density, color = year)) +
+    theme(legend.position="none") 
+    
+}
+
+#test_2018 <- subset(pred.spatial, year=="2018")
+#plot_lats(test_2018)
+
+plot_lats(pred.spatial_june) +
+  #scale_fill_gradient2() +
+  facet_wrap(~year)
+  ggtitle("Density Distribution by Latitude")
+
+ggsave(filename = "03_plots/June_scaleLat_DistributionsLats.png",
+       dpi = 600,
+       width=25,
+       height=25,
+       units="cm")
+```
+
+cumulative distribution function by latitude!
+```{r}
+  
+#first, grab the total data disregarding year to make our base plot 
+latCum <- pred.spatial_may %>%
+     group_by(Lat.km) %>%
+     summarize(density = sum(exp(est)))  %>%
+     mutate(density = density / sum(density))
+  
+  latCum$ID <- seq.int(nrow(latCum))
+  latCum$cum <- numeric(232)
+  
+  latCum$cum[1] <- 1
+  
+  for (x in latCum$ID) {
+    if (x > 1) {
+      prev <- latCum$cum[x-1]
+      latCum$cum[x] <- prev - latCum$density[x]
+    }
+  }
+  
+   ggplot(latCum, aes(Lat.km)) + geom_line(aes(y=cum, color = 'cum')) + scale_x_reverse()
+  
+# next, we'll create our facet_wrap for the cdf of other years 
+  
+plot_cdfs <- function(dat) {
+  latCdfs <- dat %>%
+    group_by(year, Lat.km) %>%
+    summarize(density = sum(exp(est)))  %>%
+    mutate(density = density / sum(density))
+  
+  latCdfs$ID <- seq.int(nrow(latCdfs))
+  latCdfs$cum <- numeric(length(latCdfs$ID))
+  
+  #print(length(latCdfs$ID))
+  
+  latCdfs$cum[1] <- 1
+  
+  for (x in latCdfs$ID) {
+    if (x>1) {
+      if (latCdfs$year[x] == latCdfs$year[x-1]) {
+        prev <- latCdfs$cum[x-1]
+        latCdfs$cum[x] <- prev - latCdfs$density[x]
+      } else {
+        latCdfs$cum[x] <- 1
+      }
+    }
+  }
+  
+  ggplot() + geom_line(data=latCdfs, aes(x=Lat.km, y=cum, color = 'year')) +   
+    geom_line(data=latCum, aes(x=Lat.km,y=cum, color = 'cum')) + scale_x_reverse()
+  
+}
+
+plot_cdfs(pred.spatial_may) +
+  scale_fill_gradient2() +
+  facet_wrap(~year)
+  ggtitle("CDFs by latitude")
+  
+# ggsave(filename = "03_plots/MayCDFs.png",
+#        dpi = 600,
+#        width=25,
+#        height=25,
+#        units="cm")
+  
+```
+
+residual plots 
+```{r}
+# pred.spatial_may <- pred.spatial_may %>% 
+#   filter(!grepl('2008', year))
+
+#test <- subset(pred.spatial_may, year =='2008')
+
+#first, grab the total data disregarding year to make our base plot 
+latCum <- subset(pred.spatial_june, Lat.km >= 5113 & Lat.km <= 5354) %>%
+     group_by(Lat.km) %>%
+     summarize(density = sum(exp(est)))  %>%
+     mutate(density = density / sum(density))
+  
+  latCum$ID <- seq.int(nrow(latCum))
+  latCum$cum <- numeric(length(latCum$ID))
+  
+  latCum$cum[1] <- 1
+  
+  for (x in latCum$ID) {
+    if (x > 1) {
+      prev <- latCum$cum[x-1]
+      latCum$cum[x] <- prev - latCum$density[x]
+    }
+  }
+  
+  # ggplot(latCum, aes(Lat.km)) + geom_line(aes(y=cum, color = 'cum')) + geom_line(aes(y=density, color = 'density')) + scale_x_reverse()
+  
+# next, we'll create our facet_wrap for the cdf of other years 
+  
+plot_cdfs <- function(dat) {
+  latCdfs <- subset(dat, Lat.km >= 5113 & Lat.km <= 5354) %>%
+    group_by(year, Lat.km) %>%
+    summarize(density = sum(exp(est)))  %>%
+    mutate(density = density / sum(density))
+  
+  latCdfs$ID <- seq.int(nrow(latCdfs))
+  latCdfs$cum <- numeric(length(latCdfs$ID))
+  
+  latCdfs$resids <- numeric(length(latCdfs$ID))
+  
+  #print(length(latCdfs$ID))
+  
+  latCdfs$cum[1] <- 1
+  
+  for (x in latCdfs$ID) {
+    if (x>1) {
+      if (latCdfs$year[x] == latCdfs$year[x-1]) {
+        prev <- latCdfs$cum[x-1]
+        latCdfs$cum[x] <- prev - latCdfs$density[x]
+      } else {
+        latCdfs$cum[x] <- 1
+      }
+    }
+    
+    index <- match(latCdfs$Lat.km[x], latCum$Lat.km)
+    latCdfs$resids[x] <- latCdfs$cum[x] - latCum$cum[index]
+  }
+  
+  
+  
+  #ggplot(latCdfs, aes(latdd, resids, color="year")) + geom_point() + scale_x_reverse()
+  
+  #initialize empty matrix
+  avg_resids <- data.frame(matrix(ncol = 2, nrow = length(unique(dat$year))))
+  x <- c("year", "avg_resid")
+  colnames(avg_resids) <- x
+  
+  #build up matrix 
+  i <- 1 # counter variable
+  for (y in unique(latCdfs$year)) {
+    avg_resids$year[i] <- y
+    
+    by_year <- subset(latCdfs, year == toString(y))
+    avg_resids$avg_resid[i] <- mean(by_year$resids)
+    
+    i <- i +1 
+  }
+  
+  
+  
+  avg_resids
+  
+}
+
+sdm_resids <- plot_cdfs(pred.spatial_june) #+
+  # scale_fill_gradient2() +
+  # facet_wrap(~year)
+  # ggtitle("CDFs by latitude")
+  
+# ggsave(filename = "03_plots/MayCDFResiduals.png",
+#        dpi = 600,
+#        width=25,
+#        height=25,
+#        units="cm")
+
+ggplot() + geom_line(data=sdm_resids, aes(year, avg_resid)) + 
+  ggtitle("sdmTMB Residuals by Year") + ylab("sdmTMB Residuals") +
+  ylim(-.2, .1)
+
+#write.csv(resids,"resids.csv", row.names = FALSE)
+  
+
+```
+
+trying to fit error bars: 
+issues include p function not including Lat.km despite it exactly replacing depth in example code :(
+other issues include standard error not being included in p?? NaN 
+could be because not a strong correlation between lat and density? that shouldn't be it
+```{r}
+ #may$Lat.km2 <- may$Lat.km^2
+
+ m6c <- sdmTMB(
+   density ~ 0 + as.factor(year),
+   data = may,
+   time_varying = ~ 0 + Lat.km,
+   mesh = bspde_may,
+   family = tweedie(link = "log"),
+   spatial = "on",
+   time = "year",
+   spatiotemporal = "IID"
+ )
+ AIC(m6c)
+
+ nd <- expand.grid(
+   Lat.km = seq(min(may$Lat.km) + 0.2,
+     max(may$Lat.km) - 0.2,
+     length.out = 677
+   ),
+   year = unique(may$year) # all years
+ )
+ #nd$Lat.km2 <- nd$Lat.km^2
+
+ p <- predict(m6c, newdata = nd, se_fit = TRUE, re_form = NA)
+ p$Lat.km <- nd$Lat.km 
+
+ggplot(p, aes(Lat.km, exp(est),
+  ymin = exp(est - 1.96 * est_se),
+  ymax = exp(est + 1.96 * est_se),
+  group = as.factor(year)
+)) +
+  geom_line(aes(colour = year), lwd = 1) +
+  geom_ribbon(aes(fill = year), alpha = 0.1) +
+  scale_colour_viridis_c() +
+  scale_fill_viridis_c() +
+  #scale_x_continuous(labels = function(x) round(exp(x * pcod$depth_sd[1] + pcod$depth_mean[1]))) +
+  coord_cartesian(expand = F) +
+  labs(x = "Lat.km", y = "Biomass density (kg/km2)")
+
+
+```
+
+these are more weird and not as helpful
+```{r}
+
+g2 <- ggeffect(fit_may, "year_f")
+plot(g2)
+```
+
+hard code for qq plots (errorring, package issue?)
+```{r}
+#quantile(latGroupTest, probs = c(.25, .4))
+# see how this lat changes year to year 
+# correspond to modes? 
+
+# janky workaround to making qq-plots! 
+# this took up way too much of my time 
+
+df <- read.csv("01_tidy_data/df_JSOES_Chinook_salmon_yearling_Interior_Sp.csv") # data formatted with format_raw_data.R
+
+dat <- df %>% 
+  dplyr::rename(density = 'numPkm2') %>% 
+  dplyr::select(density,yday,month,week,year,year_f,depth,scale_depth,Lon.km,
+                Lat.km, scale_dist2shore) # deleted station code
+
+may <- subset(dat, month =="May")
+
+findQuartiles <- function(data, vec) {
+  sum <- 0
+  i <- 1
+  for(x in 1:99) {
+    while (sum < x/100) {
+      sum <- sum + data$density[i]
+      i <- i + 1
+    }
+    #print(data$Lat.km[i])
+    vec[x] = data$Lat.km[i]
+  }
+  vec
+}
+
+plot_qqs <- function(dat1, dat2) {
+
+  trawlGroups <- dat1 %>%
+     group_by(Lat.km) %>%
+     summarize(density = sum(density)) %>%
+     mutate(density = density / sum(density))# %>%
+    # 
+    # group_by(Diff = cumsum(c(1,diff(Lat.km)) >= .1) ) %>%
+    # summarise(Lat.km = mean(Lat.km), density = mean(density)) %>%
+    # ungroup() %>% select(-Diff) %>%
+    # 
+    # mutate(density = density / sum(density))
+  
+    latGroups <- dat2 %>%
+    group_by(Lat.km) %>%
+    summarize(density = sum(exp(est)))  %>%
+    mutate(density = density / sum(density))
+
+    trawlVec <- c()
+    trawlVec <- findQuartiles(trawlGroups, trawlVec)
+
+    latVec <- c()
+    latVec <- findQuartiles(latGroups, latVec)
+    
+    df <- data.frame(trawlVec, latVec)
+    
+    ggplot(df, aes(trawlVec, latVec)) + geom_point() +
+    geom_abline(slope=1, intercept=0, color = 'red')
+    
+}
+
+# yrs <- sort(as.vector(unique(may$year))) 
+# for (x in yrs) {
+#   x <- toString(x)
+#   
+#   print(subset(may, year==x))
+#   
+#   print(subset(pred.spatial_may, year==x))
+#   #plot_qqs(subset(may, year==x), subset(pred.spatial_may, year==x))
+# } #still don't know why using a for loop to isolate years doesn't work :(
+
+# pred_1999 <- subset(pred.spatial_may, year =='1999')
+# may_1999 <- subset(may, year =='1999')
+# 
+# plot_qqs(may_1999, pred_1999)
+# 
+# plot_qqs(subset(may, year=='2000'), subset(pred.spatial_may, year=='2000'))
+# 
+# plot_qqs(subset(may, year=='2001'), subset(pred.spatial_may, year=='2001'))
+# 
+# plot_qqs(subset(may, year=='2002'), subset(pred.spatial_may, year=='2002'))
+# 
+# plot_qqs(subset(may, year=='2003'), subset(pred.spatial_may, year=='2003'))
+# 
+# plot_qqs(subset(may, year=='2004'), subset(pred.spatial_may, year=='2004'))
+# 
+# plot_qqs(subset(may, year=='2005'), subset(pred.spatial_may, year=='2005'))
+# 
+# plot_qqs(subset(may, year=='2006'), subset(pred.spatial_may, year=='2006'))
+# 
+# plot_qqs(subset(may, year=='2007'), subset(pred.spatial_may, year=='2007'))
+# 
+# plot_qqs(subset(may, year=='2008'), subset(pred.spatial_may, year=='2008'))
+# 
+# plot_qqs(subset(may, year=='2009'), subset(pred.spatial_may, year=='2009'))
+# 
+# plot_qqs(subset(may, year=='2010'), subset(pred.spatial_may, year=='2010'))
+# 
+# plot_qqs(subset(may, year=='2011'), subset(pred.spatial_may, year=='2011'))
+# 
+# plot_qqs(subset(may, year=='2012'), subset(pred.spatial_may, year=='2012'))
+# 
+# plot_qqs(subset(may, year=='2015'), subset(pred.spatial_may, year=='2015'))
+# 
+# plot_qqs(subset(may, year=='2016'), subset(pred.spatial_may, year=='2016'))
+# 
+# plot_qqs(subset(may, year=='2017'), subset(pred.spatial_may, year=='2017'))
+# 
+ plot_qqs(subset(may, year=='2018'), subset(pred.spatial_may, year=='2018'))
+# 
+# plot_qqs(subset(may, year=='2019'), subset(pred.spatial_may, year=='2019'))
+# 
+# plot_qqs(subset(may, year=='2021'), subset(pred.spatial_may, year=='2021'))
+# 
+# plot_qqs(subset(may, year=='2022'), subset(pred.spatial_may, year=='2022'))
+# 
+# plot_qqs(subset(may, year=='2023'), subset(pred.spatial_may, year=='2023'))
+
+
+
+
+
+
+```
+
+
+
+
+
+
+```{r}
+ggplot() + 
+  geom_raster(data = pred.spatial, aes(x = Lon.km*1000, y = Lat.km*1000)) +
+  scale_fill_gradient2() +
+  geom_sf(data=na_coast_proj,fill = "antique white") +
+  facet_wrap(~year) +
+  labs(x = "Longitude", y = "Latitude")+
+  theme_light() +
+  labs(title = "Spatiotemporal random effects",
+       subtitle = "Yearlings")
+
+
+ggsave(filename = "03_plots/Yearling_EpsPlot_byYr.png",
+       dpi = 600,
+       width=25,
+       height=25,
+       units="cm")
+
+
+# Need to talk to Eric Ward and Cam Freshwater about these
+# coefficient yday varying in space
+```
+
+```{r}
+ggplot()+
+  geom_raster(data=pred.spatial, aes(x = Lon.km*1000, y = Lat.km*1000)) +
+  scale_fill_gradient2()+
+  geom_sf(data=na_coast_proj,fill = "antique white") +
+   facet_wrap(~year) +
+  labs(x = "Longitude", y = "Latitude")+
+  theme_light() +
+  labs(title = "Spatially varying yday",
+       subtitle = "Yearlings")
+
+ggsave(filename = "03_plots/Yearling_SpaVar.png",
+       dpi = 600,
+       width=25,
+       height=15,
+       units="cm")
+
+# spatially varying intercept
+ggplot()+
+  geom_raster(data=pred.spatial, aes(x = Lon.km*1000, y = Lat.km*1000, fill = omega_s)) +
+  scale_fill_gradient2()+
+  geom_sf(data=na_coast_proj,fill = "antique white") +
+   facet_wrap(~year) +
+  labs(x = "Longitude", y = "Latitude")+
+  theme_light() +
+  labs(title = "Spatially varying intercept of scale_yday",
+       subtitle = "Yearlings")
+
+ggsave(filename = "03_plots/Yearlings_SpatVarYday.png",
+       dpi = 600,
+       width=25,
+       height=15,
+       units="cm")
+
+
+```
+
+testing on pcod data 
+```{r}
+mesh <- make_mesh(pcod, c("X", "Y"), cutoff = 10)
+plot(mesh)
+
+m4 <- sdmTMB(
+  density ~ 0 + as.factor(year),
+  data = pcod,
+  time_varying = ~ 0 + depth_scaled + depth_scaled2,
+  mesh = mesh,
+  family = tweedie(link = "log"),
+  spatial = "on",
+  time = "year",
+  spatiotemporal = "IID"
+)
+
+nd <- expand.grid(
+  depth_scaled = seq(min(pcod$depth_scaled) + 0.2,
+    max(pcod$depth_scaled) - 0.2,
+    length.out = 50
+  ),
+  year = unique(pcod$year) # all years
+)
+nd$depth_scaled2 <- nd$depth_scaled^2
+
+p <- predict(m4, newdata = nd, se_fit = TRUE, re_form = NA)
+
+ggplot(p, aes(depth_scaled, exp(est),
+  ymin = exp(est - 1.96 * est_se),
+  ymax = exp(est + 1.96 * est_se),
+  group = as.factor(year)
+)) +
+  geom_line(aes(colour = year), lwd = 1) +
+  geom_ribbon(aes(fill = year), alpha = 0.1) +
+  scale_colour_viridis_c() +
+  scale_fill_viridis_c() +
+  scale_x_continuous(labels = function(x) round(exp(x * pcod$depth_sd[1] + pcod$depth_mean[1]))) +
+  coord_cartesian(expand = F) +
+  labs(x = "Depth (m)", y = "Biomass density (kg/km2)")
+
+
+```
